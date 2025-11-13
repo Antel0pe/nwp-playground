@@ -10,8 +10,14 @@ export type FieldBuffers = {
   theta_p: GPUBuffer; qv: GPUBuffer; qc: GPUBuffer; pi: GPUBuffer;
   // diagnostic/background
   theta0: GPUBuffer; p0: GPUBuffer; qv_bg: GPUBuffer;
+  dtheta0_dz: GPUBuffer;                 
+
+  // rhs accumulators (tendencies) — cleared each step before recompute
+  rhs_w: GPUBuffer;                      
+  rhs_theta_p: GPUBuffer;               
   // surface targets (only first kmax=Nbl levels are meaningful, rest 0)
   theta_surf_target: GPUBuffer; qv_surf_target: GPUBuffer;
+  bg_thermo: GPUBuffer;
 };
 
 export type Params = {
@@ -61,6 +67,15 @@ export async function initBoussinesq3D(device: GPUDevice) {
   const theta_surf_target = new Float32Array(N);
   const qv_surf_target = new Float32Array(N);
 
+  const dtheta0_dz_arr = new Float32Array(N);   // per-cell gradient field
+  const rhs_w_arr = new Float32Array(N);        // zeroed tendencies
+  const rhs_theta_p_arr = new Float32Array(N);  // zeroed tendencies
+
+  // Make sure you created dtheta0_dz_arr earlier (Float32Array(N).fill(0.003))
+const thermoPacked = new Float32Array(3 * N);
+
+
+
   // ------------------ Constants (match your Python) ------------------
   const theta0_surface = 300.0;             // K
   const dtheta0_dz = 0.003;                 // K/m (stable stratification)
@@ -99,6 +114,14 @@ export async function initBoussinesq3D(device: GPUDevice) {
   // ------------------ Precompute per-level z centers ------------------
   const zs = new Float32Array(nz);
   for (let k = 0; k < nz; k++) zs[k] = (k + 0.5) * dz;
+
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        dtheta0_dz_arr[idx(i, j, k, nx, ny)] = dtheta0_dz; // 0.003
+      }
+    }
+  }
 
   // ------------------ Fill 3D fields ------------------
   for (let k = 0; k < nz; k++) {
@@ -170,6 +193,10 @@ export async function initBoussinesq3D(device: GPUDevice) {
     }
   }
 
+    thermoPacked.set(theta0, 0 * N);
+thermoPacked.set(dtheta0_dz_arr, 1 * N);
+thermoPacked.set(qv_bg, 2 * N);
+
   // ------------------ Upload helpers ------------------
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
   function makeBuf(data: Float32Array) {
@@ -185,13 +212,15 @@ export async function initBoussinesq3D(device: GPUDevice) {
     theta_p: makeBuf(theta_p), qv: makeBuf(qv), qc: makeBuf(qc), pi: makeBuf(pi),
     theta0: makeBuf(theta0), p0: makeBuf(p0), qv_bg: makeBuf(qv_bg),
     theta_surf_target: makeBuf(theta_surf_target), qv_surf_target: makeBuf(qv_surf_target),
+  dtheta0_dz: makeBuf(dtheta0_dz_arr),   
+  rhs_w: makeBuf(rhs_w_arr),           
+  rhs_theta_p: makeBuf(rhs_theta_p_arr),   
+  bg_thermo: makeBuf(thermoPacked),   
   };
 
   const params: Params = { Lv, cp, R, p_ref, eps, g, tau_damp_w, tau_rad, Nbl, tau_surf, qc_crit, rain_frac };
 
   const dims: SimDims = { nx, ny, nz, dx, dy, dz };
-
-  console.log(theta_p)
 
   return { fields, params, dims };
 }
