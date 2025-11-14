@@ -18,12 +18,18 @@ export type FieldBuffers = {
   // surface targets (only first kmax=Nbl levels are meaningful, rest 0)
   theta_surf_target: GPUBuffer; qv_surf_target: GPUBuffer;
   bg_thermo: GPUBuffer;
+  rhs_qv: GPUBuffer;
+rhs_qc: GPUBuffer;
+rhs_u: GPUBuffer;
+rhs_v: GPUBuffer;
 };
 
 export type Params = {
   Lv: number; cp: number; R: number; p_ref: number; eps: number; g: number;
   tau_damp_w: number; tau_rad: number; Nbl: number; tau_surf: number;
   qc_crit: number; rain_frac: number;
+  dx: number; dy: number; dz: number;
+  nu: number; kappa: number; Dq: number;
 };
 
 function exner(p: number, p_ref = 1.0e5, R = 287.0, cp = 1004.0) {
@@ -74,6 +80,15 @@ export async function initBoussinesq3D(device: GPUDevice) {
   // Make sure you created dtheta0_dz_arr earlier (Float32Array(N).fill(0.003))
 const thermoPacked = new Float32Array(3 * N);
 
+const rhs_qv_arr = new Float32Array(N);
+const rhs_qc_arr = new Float32Array(N);
+
+const rhs_u_arr = new Float32Array(N);
+const rhs_v_arr = new Float32Array(N);
+
+const nu = 10.0;
+const kappa = 10.0;
+const Dq = 10.0;
 
 
   // ------------------ Constants (match your Python) ------------------
@@ -216,9 +231,13 @@ thermoPacked.set(qv_bg, 2 * N);
   rhs_w: makeBuf(rhs_w_arr),           
   rhs_theta_p: makeBuf(rhs_theta_p_arr),   
   bg_thermo: makeBuf(thermoPacked),   
+  rhs_qv: makeBuf(rhs_qv_arr),
+rhs_qc: makeBuf(rhs_qc_arr),
+rhs_u: makeBuf(rhs_u_arr),
+rhs_v: makeBuf(rhs_v_arr),
   };
 
-  const params: Params = { Lv, cp, R, p_ref, eps, g, tau_damp_w, tau_rad, Nbl, tau_surf, qc_crit, rain_frac };
+  const params: Params = { nu, kappa, Dq, dx, dy, dz, Lv, cp, R, p_ref, eps, g, tau_damp_w, tau_rad, Nbl, tau_surf, qc_crit, rain_frac };
 
   const dims: SimDims = { nx, ny, nz, dx, dy, dz };
 
