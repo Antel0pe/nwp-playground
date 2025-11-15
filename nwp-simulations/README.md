@@ -34,3 +34,13 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## To do
+- refactor in the steps like advect_scalar, diffuse_velocity the repeated create bind group calls. io type handles shuffling between s0 for rk2 step 1 and s_star for rk2 step 2. if you create all theose buffers from step rk2 in a central place and then create buffers for like rk2_step1_thisTypeBuffer and rk2_step2_thisTypeBuffer then you can avoid the memory problems by dozens of create bind groups scattered in dispatch functions. would maybe help firefox stay stable like chrome does
+
+- making the render 3d
+	- can start with slider that adjusts which slice is being shown
+- finish step rk2 function
+- make camera to move around
+- render clouds and stuff
+- i guess the most important view isn't temperature or moisture but simply cloud view on a sky

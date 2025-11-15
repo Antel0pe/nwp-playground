@@ -80,9 +80,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const ab = new ArrayBuffer(64);
   const u32 = new Uint32Array(ab);
   const f32 = new Float32Array(ab);
-  u32[0] = nx >>> 0;  u32[1] = ny >>> 0;  u32[2] = nz >>> 0;  u32[3] = N >>> 0;
-  u32[4] = 1;         u32[5] = nx >>> 0;  u32[6] = (nx*ny) >>> 0; u32[7] = Nbl >>> 0;
-  f32[8]  = inv_tau;  // inv_tau in slot 8; rest padding
+  u32[0] = nx >>> 0; u32[1] = ny >>> 0; u32[2] = nz >>> 0; u32[3] = N >>> 0;
+  u32[4] = 1; u32[5] = nx >>> 0; u32[6] = (nx * ny) >>> 0; u32[7] = Nbl >>> 0;
+  f32[8] = inv_tau;  // inv_tau in slot 8; rest padding
 
   const uniforms = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: "surface_relax_uniforms" });
   device.queue.writeBuffer(uniforms, 0, ab);

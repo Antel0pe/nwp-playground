@@ -1,6 +1,7 @@
 // step_rk2.ts
 import type { SimDims, FieldBuffers, Params } from "./init_boussinesq";
 import type { ComputeRhsArtifacts } from "./compute_rhs";
+import { makeProjection } from "./projection/project_velocity";
 
 // small WGSL utils (unchanged)
 const CLEAR_WGSL = /*wgsl*/`
@@ -84,6 +85,8 @@ export function makeStepRK2(opts: {
 
     // finals to avoid aliasing
     const w_new = makeBuf(bytes);
+    const u_new = makeBuf(bytes);
+    const v_new = makeBuf(bytes);
     const theta_p_new = makeBuf(bytes);
 
     // uniforms
@@ -250,6 +253,26 @@ export function makeStepRK2(opts: {
             { binding: 3, resource: { buffer: U_ax } },
         ]
     });
+    const bgAxpy_u_final = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.u } },   // s0
+            { binding: 1, resource: { buffer: u_star } },     // tmp sum
+            { binding: 2, resource: { buffer: u_new } },      // out
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_v_final = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.v } },
+            { binding: 1, resource: { buffer: v_star } },
+            { binding: 2, resource: { buffer: v_new } },
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
 
     // --- helpers -------------------------------------------------------------
 
@@ -288,52 +311,86 @@ export function makeStepRK2(opts: {
         });
     }
 
+    const projection = makeProjection({ device, dims });
+
 
     function step(encoder: GPUCommandEncoder, dt: number) {
-        const pass = encoder.beginComputePass();
+        // --- 1) set alpha = dt BEFORE opening any pass
+        writeAlpha(dt); // writes to U_ax (uniform) — SAFE here
 
-        // 1) BCs(s0) — later
+        // ----- PASS A: rhs1 + build star -----
+        {
+            const pass = encoder.beginComputePass();
 
-        // 2) rhs1: clear → buildRHS(s0)
-        clearAllRhs(pass);
-        buildRHS_s0(pass);
+            // rhs1: clear → buildRHS(s0)
+            clearAllRhs(pass);
+            buildRHS_s0(pass);
 
-        // 3) snapshot rhs1 (keep your existing snapshots as-is)
-        pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_w_to_rhs1); pass.dispatchWorkgroups(wg);
-        pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_th_to_rhs1); pass.dispatchWorkgroups(wg);
-        // (If/when you advance u/v, add snapshots for rhs_u/rhs_v too.)
+            // snapshot rhs1
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_w_to_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_th_to_rhs1); pass.dispatchWorkgroups(wg);
 
-        // 4) s★ = s0 + dt * rhs1
-        writeAlpha(dt);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            // s★ = s0 + dt * rhs1
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
-        // qv★, qc★ = copies of s0 (until you add qv/qc RHS)
-        pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qv_to_star); pass.dispatchWorkgroups(wg);
-        pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qc_to_star); pass.dispatchWorkgroups(wg);
+            // qv★, qc★ = copies of s0
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qv_to_star); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qc_to_star); pass.dispatchWorkgroups(wg);
 
-        // 5) microphysics(s★), BCs(s★) — later
-        // 6) projection — later
+            projection.project(pass, u_star, v_star, w_star, 40)
 
-        // 7) rhs2 at s★: clear → buildRHS(s★)
-        clearAllRhs(pass);
-        buildRHS_star(pass);
+            pass.end(); // <<< close pass before changing alpha
+        }
 
-        // 8) final combine: s_new = s0 + 0.5*dt * (rhs1 + rhs2)
+        // --- 2) set alpha = 1.0 BETWEEN passes
         writeAlpha(1.0);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_w_sum); pass.dispatchWorkgroups(wg);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_th_sum); pass.dispatchWorkgroups(wg);
 
+        // ----- PASS B: rhs2 at star + sum rhs -----
+        {
+            const pass = encoder.beginComputePass();
+
+            // rhs2: clear → buildRHS(s★)
+            clearAllRhs(pass);
+            buildRHS_star(pass);
+
+            // tmp = rhs1 + rhs2  (uses star buffers as tmp)
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_w_sum); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_th_sum); pass.dispatchWorkgroups(wg);
+
+            // projection.project(pass, u_new, v_new, w_new, 40)
+
+            pass.end(); // <<< close pass before changing alpha again
+        }
+
+        // --- 3) set alpha = 0.5*dt BETWEEN passes
         writeAlpha(0.5 * dt);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
-        pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
 
-        pass.end();
+        // ----- PASS C: final combine -----
+        {
+            const pass = encoder.beginComputePass();
 
-        // 9) copy finals back to s0 (so defaults remain valid)
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_final); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_final); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
+
+            // Now project final velocities
+            projection.project(pass, u_new, v_new, w_new, 40);
+
+            // any “post-step” kernels could run here too
+
+            pass.end();
+        }
+
+        // copy finals back to s0
+        encoder.copyBufferToBuffer(u_new, 0, fields.u, 0, bytes);
+        encoder.copyBufferToBuffer(v_new, 0, fields.v, 0, bytes);
         encoder.copyBufferToBuffer(w_new, 0, fields.w, 0, bytes);
         encoder.copyBufferToBuffer(theta_p_new, 0, fields.theta_p, 0, bytes);
+
     }
+
 
 
     return { step };

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { initBoussinesq3D } from "./init_boussinesq";
 import { makeStepRK2 } from "./step_rk2";
 import { makeComputeRhs } from "./compute_rhs";
@@ -35,6 +35,7 @@ async function debugPrintBufferMax(device: GPUDevice, buffer: GPUBuffer, count: 
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [accumulatedTime, setAccumulatedTime] = useState(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -54,6 +55,13 @@ export default function Home() {
 
       const device = await adapter.requestDevice();
       device.pushErrorScope("validation");
+      device.lost.then(info => {
+  console.error("WebGPU device lost:", info.message, "reason:", info.reason);
+});
+device.onuncapturederror = (e) => {
+  console.error("Uncaptured WebGPU error:", e.error?.message);
+};
+
 
       const context = canvas.getContext("webgpu");
       if (!context) {
@@ -107,6 +115,16 @@ fn NY() -> u32 { return dims.data[1]; }
 fn NZ() -> u32 { return dims.data[2]; }
 fn J () -> u32 { return dims.data[3]; }
 
+fn colormap_blue_red(v_in: f32) -> vec3<f32> {
+  let v = clamp(v_in, 0.0, 1.0);
+
+  // Simple blue → red gradient, through purple
+  // v = 0   -> (0, 0, 1) blue
+  // v = 0.5 -> (0.5, 0, 0.5) purple
+  // v = 1   -> (1, 0, 0) red
+  return vec3<f32>(v, 0.0, 1.0 - v);
+}
+
 @compute @workgroup_size(16,16)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let texSize = textureDimensions(outImg); // (nx, nz)
@@ -122,7 +140,8 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   // quick viz
   let v = clamp(t / 1.8, 0.0, 1.0);
-  textureStore(outImg, vec2<i32>(i32(i), i32(k)), vec4<f32>(v, v, v, 1.0));
+  let rgb = colormap_blue_red(v);
+  textureStore(outImg, vec2<i32>(i32(i), i32(k)), vec4<f32>(rgb, 1.0));
 }
 `,
       });
@@ -222,6 +241,7 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
         last = now;
         dtSec = Math.min(dtSec, maxFrameDt);
         accumulator += dtSec;
+        setAccumulatedTime((accTime) => accTime + dtSec)
 
         // Optional: multiple substeps if physics needs smaller dt than render
         // E.g., while (accumulator >= subDt) { step physics with subDt; accumulator -= subDt; }
@@ -276,15 +296,15 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
       requestAnimationFrame(frame);
 
       // Optional: pause when tab hidden (saves GPU)
-      document.addEventListener("visibilitychange", () => {
-        if (document.hidden) {
-          running = false;
-        } else if (!running) {
-          running = true;
-          last = performance.now();
-          requestAnimationFrame(frame);
-        }
-      });
+      // document.addEventListener("visibilitychange", () => {
+      //   if (document.hidden) {
+      //     running = false;
+      //   } else if (!running) {
+      //     running = true;
+      //     last = performance.now();
+      //     requestAnimationFrame(frame);
+      //   }
+      // });
 
       // // Optional: handle canvas resize for crisp rendering
       // function resizeCanvas() {
@@ -304,14 +324,22 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
     init();
   }, []);
 
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-black">
+return (
+  <main className="flex min-h-screen items-center justify-center bg-black">
+    <div className="relative">
+      {/* overlay */}
+      <h1 className="absolute top-2 left-2 text-white z-10">
+        Time: {accumulatedTime.toFixed(0)}s
+      </h1>
+
+      {/* canvas */}
       <canvas
         ref={canvasRef}
         width={800}
         height={600}
         className="border border-neutral-800"
       />
-    </main>
-  );
+    </div>
+  </main>
+);
 }

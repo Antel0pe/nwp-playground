@@ -138,9 +138,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const advect = makeAdvectScalar({ device, dims, params });
     const diffuseVel = makeDiffuseVelocity({ device, dims, params });
     const diffTheta = makeDiffuseScalar({ device, dims, coeff: params.kappa ?? 0.0 });
-const diffMoist = makeDiffuseScalar({ device, dims, coeff: params.Dq ?? 0.0 });
-const radCool = makeRadiativeCooling({ device, dims, params });
-const surfRelax = makeSurfaceRelax({ device, dims, params });
+    const diffMoist = makeDiffuseScalar({ device, dims, coeff: params.Dq ?? 0.0 });
+    const radCool = makeRadiativeCooling({ device, dims, params });
+    const surfRelax = makeSurfaceRelax({ device, dims, params });
 
     // helper to build buoyancy bindgroup quickly
     const makeBG_buoy = (io: BuildRHSIO) =>
@@ -233,36 +233,36 @@ const surfRelax = makeSurfaceRelax({ device, dims, params });
         });
 
         // ---- 5) scalar diffusion
-diffTheta.dispatch(pass, {
-  phi: io.state.theta_p,
-  rhs_out: io.out.rhs_theta_p,
-});
+        diffTheta.dispatch(pass, {
+            phi: io.state.theta_p,
+            rhs_out: io.out.rhs_theta_p,
+        });
 
-diffMoist.dispatch(pass, {
-  phi: io.state.qv,
-  rhs_out: io.out.rhs_qv,
-});
-diffMoist.dispatch(pass, {
-  phi: io.state.qc,
-  rhs_out: io.out.rhs_qc,
-});
+        diffMoist.dispatch(pass, {
+            phi: io.state.qv,
+            rhs_out: io.out.rhs_qv,
+        });
+        diffMoist.dispatch(pass, {
+            phi: io.state.qc,
+            rhs_out: io.out.rhs_qc,
+        });
 
-// 6 -- radiative cooling
-radCool.dispatch(pass, {
-  theta_p: io.state.theta_p,
-  rhs_theta_p: io.out.rhs_theta_p,
-});
+        // 6 -- radiative cooling
+        radCool.dispatch(pass, {
+            theta_p: io.state.theta_p,
+            rhs_theta_p: io.out.rhs_theta_p,
+        });
 
-// 7 - add moisture and heat at the bottom
-surfRelax.dispatch(pass, {
-  theta0: fields.theta0,                 // background
-  theta_p: io.state.theta_p,             // current θ′
-  qv: io.state.qv,                       // current qv
-  theta_target: fields.theta_surf_target,
-  qv_target:    fields.qv_surf_target,
-  rhs_theta_p:  io.out.rhs_theta_p,
-  rhs_qv:       io.out.rhs_qv,
-});
+        // 7 - add moisture and heat at the bottom
+        surfRelax.dispatch(pass, {
+            theta0: fields.theta0,                 // background
+            theta_p: io.state.theta_p,             // current θ′
+            qv: io.state.qv,                       // current qv
+            theta_target: fields.theta_surf_target,
+            qv_target: fields.qv_surf_target,
+            rhs_theta_p: io.out.rhs_theta_p,
+            rhs_qv: io.out.rhs_qv,
+        });
     }
 
     return {
