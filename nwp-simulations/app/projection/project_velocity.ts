@@ -10,10 +10,33 @@ export function makeProjection(opts:{ device: GPUDevice; dims: SimDims }) {
   const bytes = N * 4;
 
   // scratch: div, psi ping-pong
-  const makeBuf = (bytes:number)=>device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST, mappedAtCreation: true, }).unmap() as any;
-  const div = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC });
-  const psiA = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC });
-  const psiB = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC });
+  const div = device.createBuffer({
+    size: bytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+
+  // psiA, psiB: start as zero (Jacobi from 0)
+  const psiA = device.createBuffer({
+    size: bytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  {
+    const view = new Float32Array(psiA.getMappedRange());
+    view.fill(0);
+    psiA.unmap();
+  }
+
+  const psiB = device.createBuffer({
+    size: bytes,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  {
+    const view = new Float32Array(psiB.getMappedRange());
+    view.fill(0);
+    psiB.unmap();
+  }
 
   const divergence = makeDivergence({ device, dims });
   const jacobi = makeJacobiPoisson({ device, dims });

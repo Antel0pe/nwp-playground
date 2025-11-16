@@ -2,6 +2,7 @@
 import type { SimDims, FieldBuffers, Params } from "./init_boussinesq";
 import type { ComputeRhsArtifacts } from "./compute_rhs";
 import { makeProjection } from "./projection/project_velocity";
+import { makeMicrophysicsSaturationAdjust } from "./microphysics_saturation";
 
 // small WGSL utils (unchanged)
 const CLEAR_WGSL = /*wgsl*/`
@@ -80,6 +81,8 @@ export function makeStepRK2(opts: {
     const qc_star = makeBuf(bytes);
 
     // archive rhs1
+    const rhs1_u = makeBuf(bytes);
+    const rhs1_v = makeBuf(bytes);
     const rhs1_w = makeBuf(bytes);
     const rhs1_theta_p = makeBuf(bytes);
 
@@ -105,6 +108,8 @@ export function makeStepRK2(opts: {
         f32[1] = a;
         device.queue.writeBuffer(U_ax, 0, ab);
     };
+
+    const micro = makeMicrophysicsSaturationAdjust({ device, dims });
 
     // utility pipelines
     const pipeClear = device.createComputePipeline({
@@ -159,6 +164,23 @@ export function makeStepRK2(opts: {
         ],
     });
     // copy rhs → rhs1
+    const bgCopy_rhs_u_to_rhs1 = device.createBindGroup({
+        layout: pipeCopy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.rhs_u } },
+            { binding: 1, resource: { buffer: rhs1_u } },
+            { binding: 2, resource: { buffer: U_N } },
+        ],
+    });
+
+    const bgCopy_rhs_v_to_rhs1 = device.createBindGroup({
+        layout: pipeCopy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.rhs_v } },
+            { binding: 1, resource: { buffer: rhs1_v } },
+            { binding: 2, resource: { buffer: U_N } },
+        ],
+    });
     const bgCopy_rhs_w_to_rhs1 = device.createBindGroup({
         layout: pipeCopy.getBindGroupLayout(0),
         entries: [
@@ -195,6 +217,26 @@ export function makeStepRK2(opts: {
     });
 
     // s★ = s0 + dt * rhs1
+    const bgAxpy_u_star_from_s0_rhs1 = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.u } },
+            { binding: 1, resource: { buffer: rhs1_u } },
+            { binding: 2, resource: { buffer: u_star } },
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_v_star_from_s0_rhs1 = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.v } },
+            { binding: 1, resource: { buffer: rhs1_v } },
+            { binding: 2, resource: { buffer: v_star } },
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
     const bgAxpy_w_star_from_s0_rhs1 = device.createBindGroup({
         layout: pipeAxpy.getBindGroupLayout(0),
         entries: [
@@ -215,6 +257,26 @@ export function makeStepRK2(opts: {
     });
 
     // tmp = rhs1 + rhs2  (use star buffers as tmp)
+    // tmp = rhs1 + rhs2  (use star buffers as tmp) — extend to u and v
+    const bgAxpy_tmp_u_sum = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: rhs1_u } },
+            { binding: 1, resource: { buffer: fields.rhs_u } },  // rhs2_u
+            { binding: 2, resource: { buffer: u_star } },        // out: tmp_u
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_tmp_v_sum = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: rhs1_v } },
+            { binding: 1, resource: { buffer: fields.rhs_v } },  // rhs2_v
+            { binding: 2, resource: { buffer: v_star } },        // out: tmp_v
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
     const bgAxpy_tmp_w_sum = device.createBindGroup({
         layout: pipeAxpy.getBindGroupLayout(0),
         entries: [
@@ -327,10 +389,14 @@ export function makeStepRK2(opts: {
             buildRHS_s0(pass);
 
             // snapshot rhs1
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_u_to_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_v_to_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_w_to_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_th_to_rhs1); pass.dispatchWorkgroups(wg);
 
             // s★ = s0 + dt * rhs1
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
@@ -338,7 +404,17 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qv_to_star); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qc_to_star); pass.dispatchWorkgroups(wg);
 
-            projection.project(pass, u_star, v_star, w_star, 40)
+            // Microphysics on star state: (theta_p★, qv★, qc★)
+            micro.microphysics(
+                pass,
+                theta_p_star,   // provisional theta'
+                qv_star,        // provisional qv
+                qc_star,        // provisional qc
+                fields.theta0,  // background θ₀
+                fields.p0       // background p₀
+            );
+
+            projection.project(pass, u_star, v_star, w_star, 100)
 
             pass.end(); // <<< close pass before changing alpha
         }
@@ -355,6 +431,8 @@ export function makeStepRK2(opts: {
             buildRHS_star(pass);
 
             // tmp = rhs1 + rhs2  (uses star buffers as tmp)
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_u_sum); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_v_sum); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_w_sum); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_th_sum); pass.dispatchWorkgroups(wg);
 
@@ -375,8 +453,20 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
 
+            // Microphysics on FINAL state: (theta_p_new, qv, qc)
+            // - theta_p_new is your final θ' buffer
+            // - fields.qv / fields.qc are the prognostic moisture fields
+            micro.microphysics(
+                pass,
+                theta_p_new,
+                fields.qv,
+                fields.qc,
+                fields.theta0,
+                fields.p0
+            );
+
             // Now project final velocities
-            projection.project(pass, u_new, v_new, w_new, 40);
+            projection.project(pass, u_new, v_new, w_new, 100);
 
             // any “post-step” kernels could run here too
 

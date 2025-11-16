@@ -44,3 +44,5 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 - make camera to move around
 - render clouds and stuff
 - i guess the most important view isn't temperature or moisture but simply cloud view on a sky
+    - dont need to make clouds actually 3d. would be nice to see a cloud from the inside but honestly more important to see it from the sides.
+- precip in cloud microphysics is currently instantaneous subtraction from clouds not actually water falling down physically from clouds

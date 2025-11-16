@@ -103,12 +103,13 @@ const rk2 = makeStepRK2({
       // COMPUTE PIPELINE: theta slice to outTex
       // ------------------------------------------------------------------
       const thetaModule = device.createShaderModule({
-        code: /* wgsl */ `
+  code: /* wgsl */ `
 struct Dims { data: array<u32> }; // [0]=nx, [1]=ny, [2]=nz, [3]=j
 
 @group(0) @binding(0) var<storage, read> theta_p : array<f32>;
 @group(0) @binding(1) var outImg : texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<storage, read> dims : Dims;
+@group(0) @binding(3) var<storage, read> qc : array<f32>;
 
 fn NX() -> u32 { return dims.data[0]; }
 fn NY() -> u32 { return dims.data[1]; }
@@ -136,15 +137,24 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   // flat idx = i + nx*(j + ny*k)
   let idx = i + NX() * (j + NY() * k);
-  let t = theta_p[idx];
 
-  // quick viz
-  let v = clamp(t / 1.8, 0.0, 1.0);
-  let rgb = colormap_blue_red(v);
+  let t  = theta_p[idx];
+  let qc_val = qc[idx];
+
+  // base theta colormap
+  let v = clamp((t + 2.0) / 4.0, 0.0, 1.0);
+  var rgb = colormap_blue_red(v);
+
+  // overlay clouds in grey if above threshold
+  if (qc_val > 1e-4) {
+    rgb = vec3<f32>(1.0, 1.0, 0.0);
+  }
+
   textureStore(outImg, vec2<i32>(i32(i), i32(k)), vec4<f32>(rgb, 1.0));
 }
 `,
-      });
+});
+
 
       const thetaPipeline = device.createComputePipeline({
         layout: "auto",
@@ -161,13 +171,15 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       device.queue.writeBuffer(dimsBuf, 0, dimsU32);
 
       const thetaBind = device.createBindGroup({
-        layout: thetaPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: fields.theta_p } },
-          { binding: 1, resource: outView },
-          { binding: 2, resource: { buffer: dimsBuf } },
-        ],
-      });
+  layout: thetaPipeline.getBindGroupLayout(0),
+  entries: [
+    { binding: 0, resource: { buffer: fields.theta_p } },
+    { binding: 1, resource: outView },
+    { binding: 2, resource: { buffer: dimsBuf } },
+    { binding: 3, resource: { buffer: fields.qc } }, // ← clouds buffer
+  ],
+});
+
 
       // ------------------------------------------------------------------
       // RENDER (fullscreen)
