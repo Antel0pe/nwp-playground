@@ -3,6 +3,9 @@ import type { SimDims, FieldBuffers, Params } from "./init_boussinesq";
 import type { ComputeRhsArtifacts } from "./compute_rhs";
 import { makeProjection } from "./projection/project_velocity";
 import { makeMicrophysicsSaturationAdjust } from "./microphysics_saturation";
+import { makeDivergenceDebugger } from "./projection/debug_divergence";
+import { makeFftProjectVelocity } from "./projection/fft_project_velocity";
+import { makeProjectionFD4 } from "./projection/project_velocity_fd4";
 
 // small WGSL utils (unchanged)
 const CLEAR_WGSL = /*wgsl*/`
@@ -85,12 +88,16 @@ export function makeStepRK2(opts: {
     const rhs1_v = makeBuf(bytes);
     const rhs1_w = makeBuf(bytes);
     const rhs1_theta_p = makeBuf(bytes);
+    const rhs1_qv = makeBuf(bytes);
+    const rhs1_qc = makeBuf(bytes);
 
     // finals to avoid aliasing
     const w_new = makeBuf(bytes);
     const u_new = makeBuf(bytes);
     const v_new = makeBuf(bytes);
     const theta_p_new = makeBuf(bytes);
+    const qv_new = makeBuf(bytes);
+    const qc_new = makeBuf(bytes);
 
     // uniforms
     const U_N = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -198,6 +205,25 @@ export function makeStepRK2(opts: {
         ]
     });
 
+    const bgCopy_rhs_qv_to_rhs1 = device.createBindGroup({
+        layout: pipeCopy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.rhs_qv } },
+            { binding: 1, resource: { buffer: rhs1_qv } },
+            { binding: 2, resource: { buffer: U_N } },
+        ],
+    });
+
+    const bgCopy_rhs_qc_to_rhs1 = device.createBindGroup({
+        layout: pipeCopy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.rhs_qc } },
+            { binding: 1, resource: { buffer: rhs1_qc } },
+            { binding: 2, resource: { buffer: U_N } },
+        ],
+    });
+
+
     // copy qv/qc -> qv_star/qc_star
     const bgCopy_qv_to_star = device.createBindGroup({
         layout: pipeCopy.getBindGroupLayout(0),
@@ -255,6 +281,26 @@ export function makeStepRK2(opts: {
             { binding: 3, resource: { buffer: U_ax } },
         ]
     });
+    const bgAxpy_qv_star_from_s0_rhs1 = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.qv } },  // x = qv0
+            { binding: 1, resource: { buffer: rhs1_qv } },    // y = rhs1_qv
+            { binding: 2, resource: { buffer: qv_star } },    // out = qv_star
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_qc_star_from_s0_rhs1 = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.qc } },
+            { binding: 1, resource: { buffer: rhs1_qc } },
+            { binding: 2, resource: { buffer: qc_star } },
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
 
     // tmp = rhs1 + rhs2  (use star buffers as tmp)
     // tmp = rhs1 + rhs2  (use star buffers as tmp) — extend to u and v
@@ -296,6 +342,27 @@ export function makeStepRK2(opts: {
         ]
     });
 
+    const bgAxpy_tmp_qv_sum = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: rhs1_qv } },
+            { binding: 1, resource: { buffer: fields.rhs_qv } },  // rhs2_qv
+            { binding: 2, resource: { buffer: qv_star } },        // out: tmp_qv
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_tmp_qc_sum = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: rhs1_qc } },
+            { binding: 1, resource: { buffer: fields.rhs_qc } },  // rhs2_qc
+            { binding: 2, resource: { buffer: qc_star } },        // out: tmp_qc
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+
     // FINAL: s_new = s0 + c * tmp  (write new, then blit back)
     const bgAxpy_w_final = device.createBindGroup({
         layout: pipeAxpy.getBindGroupLayout(0),
@@ -334,6 +401,27 @@ export function makeStepRK2(opts: {
             { binding: 3, resource: { buffer: U_ax } },
         ],
     });
+
+    const bgAxpy_qv_final = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.qv } },  // x = qv0
+            { binding: 1, resource: { buffer: qv_star } },    // y = tmp_qv = rhs1+rhs2
+            { binding: 2, resource: { buffer: qv_new } },     // out
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
+    const bgAxpy_qc_final = device.createBindGroup({
+        layout: pipeAxpy.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: fields.qc } },
+            { binding: 1, resource: { buffer: qc_star } },
+            { binding: 2, resource: { buffer: qc_new } },
+            { binding: 3, resource: { buffer: U_ax } },
+        ],
+    });
+
 
 
     // --- helpers -------------------------------------------------------------
@@ -374,8 +462,7 @@ export function makeStepRK2(opts: {
     }
 
     const projection = makeProjection({ device, dims });
-
-
+    const projection4 = makeProjectionFD4({device, dims})
     function step(encoder: GPUCommandEncoder, dt: number) {
         // --- 1) set alpha = dt BEFORE opening any pass
         writeAlpha(dt); // writes to U_ax (uniform) — SAFE here
@@ -393,6 +480,8 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_v_to_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_w_to_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_th_to_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_qv_to_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_rhs_qc_to_rhs1); pass.dispatchWorkgroups(wg);
 
             // s★ = s0 + dt * rhs1
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
@@ -401,8 +490,12 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
             // qv★, qc★ = copies of s0
-            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qv_to_star); pass.dispatchWorkgroups(wg);
-            pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qc_to_star); pass.dispatchWorkgroups(wg);
+            // pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qv_to_star); pass.dispatchWorkgroups(wg);
+            // pass.setPipeline(pipeCopy); pass.setBindGroup(0, bgCopy_qc_to_star); pass.dispatchWorkgroups(wg);
+
+            // qv★, qc★ = s0 + dt * rhs1
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qv_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qc_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
             // Microphysics on star state: (theta_p★, qv★, qc★)
             micro.microphysics(
@@ -414,11 +507,14 @@ export function makeStepRK2(opts: {
                 fields.p0       // background p₀
             );
 
-            projection.project(pass, u_star, v_star, w_star, 100)
+            
 
+            // projection.project(pass, u_star, v_star, w_star, 100)
+            projection4.project(pass, u_star, v_star, w_star)
+            
             pass.end(); // <<< close pass before changing alpha
         }
-
+        
         // --- 2) set alpha = 1.0 BETWEEN passes
         writeAlpha(1.0);
 
@@ -435,8 +531,8 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_v_sum); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_w_sum); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_th_sum); pass.dispatchWorkgroups(wg);
-
-            // projection.project(pass, u_new, v_new, w_new, 40)
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_qv_sum); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_tmp_qc_sum); pass.dispatchWorkgroups(wg);
 
             pass.end(); // <<< close pass before changing alpha again
         }
@@ -452,6 +548,8 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qv_final); pass.dispatchWorkgroups(wg);
+            pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qc_final); pass.dispatchWorkgroups(wg);
 
             // Microphysics on FINAL state: (theta_p_new, qv, qc)
             // - theta_p_new is your final θ' buffer
@@ -459,17 +557,16 @@ export function makeStepRK2(opts: {
             micro.microphysics(
                 pass,
                 theta_p_new,
-                fields.qv,
-                fields.qc,
+                qv_new,
+                qc_new,
                 fields.theta0,
                 fields.p0
             );
 
             // Now project final velocities
-            projection.project(pass, u_new, v_new, w_new, 100);
-
-            // any “post-step” kernels could run here too
-
+            // projection.project(pass, u_new, v_new, w_new, 100);
+            projection4.project(pass, u_new, v_new, w_new);
+            
             pass.end();
         }
 
@@ -478,6 +575,8 @@ export function makeStepRK2(opts: {
         encoder.copyBufferToBuffer(v_new, 0, fields.v, 0, bytes);
         encoder.copyBufferToBuffer(w_new, 0, fields.w, 0, bytes);
         encoder.copyBufferToBuffer(theta_p_new, 0, fields.theta_p, 0, bytes);
+        encoder.copyBufferToBuffer(qv_new, 0, fields.qv, 0, bytes);
+        encoder.copyBufferToBuffer(qc_new, 0, fields.qc, 0, bytes);
 
     }
 

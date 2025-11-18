@@ -254,15 +254,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         });
 
         // 7 - add moisture and heat at the bottom
-        surfRelax.dispatch(pass, {
-            theta0: fields.theta0,                 // background
-            theta_p: io.state.theta_p,             // current θ′
-            qv: io.state.qv,                       // current qv
-            theta_target: fields.theta_surf_target,
-            qv_target: fields.qv_surf_target,
-            rhs_theta_p: io.out.rhs_theta_p,
-            rhs_qv: io.out.rhs_qv,
-        });
+        // surfRelax.dispatch(pass, {
+        //     theta0: fields.theta0,                 // background
+        //     theta_p: io.state.theta_p,             // current θ′
+        //     qv: io.state.qv,                       // current qv
+        //     theta_target: fields.theta_surf_target,
+        //     qv_target: fields.qv_surf_target,
+        //     rhs_theta_p: io.out.rhs_theta_p,
+        //     rhs_qv: io.out.rhs_qv,
+        // });
     }
 
     return {

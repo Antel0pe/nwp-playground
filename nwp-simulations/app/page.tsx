@@ -7,7 +7,7 @@ import { makeStepRK2 } from "./step_rk2";
 import { makeComputeRhs } from "./compute_rhs";
 
 // Assume fields.w is your GPUBuffer
-async function debugPrintBufferMax(device: GPUDevice, buffer: GPUBuffer, count: number) {
+async function debugPrintBufferMax(device: GPUDevice, buffer: GPUBuffer) {
   const readBuffer = device.createBuffer({
     size: buffer.size,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -167,27 +167,72 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       // ------------------------------------------------------------------
       // --- PARTICLES: buffers + advect compute pipeline
       // ------------------------------------------------------------------
-      const N_PARTICLES = 20000;
+      const N_PARTICLES = nx * nz;
+const MAX_LIFE_STEPS = 300; // tweak lifetime here
 
-      // particle positions in grid coords (x, z) on the slice
-      const particleStride = 2 * 4; // 2 * f32
-      const particleBuf = device.createBuffer({
-        size: N_PARTICLES * particleStride,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
+// Particle: [x, z, life, pad] -> 4 * f32
+const particleStride = 4 * 4;
+const particleBuf = device.createBuffer({
+  size: N_PARTICLES * particleStride,
+  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+});
 
-      // initialize particles randomly over the slice
-      {
-        const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
-        for (let i = 0; i < N_PARTICLES; i++) {
-          arr[2 * i + 0] = Math.random() * (nx - 1); // x index
-          arr[2 * i + 1] = Math.random() * (nz - 1); // z index
-        }
-        device.queue.writeBuffer(particleBuf, 0, arr);
-      }
+// console.log(nx, nz)
+
+// // initialize particles randomly over the slice
+// {
+//   const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
+//   for (let i = 0; i < N_PARTICLES; i++) {
+//         const gx = i % nx;                 // grid x index 0..nx-1
+//     const gz = Math.floor(i / nx);     // grid z index 0..nz-1
+    
+//     const base = 4 * i;
+//           // arr[base + 0] = Math.random() * (nx - 1); // x index
+//           // arr[base + 1] = Math.random() * (nz - 1); // z index
+//           arr[base + 0] = gx + 0.5; // x index
+//           arr[base + 1] = gz+ 0.5; // z index
+//           console.log(gx, gz)
+//               arr[base + 2] = MAX_LIFE_STEPS;   // life
+//     arr[base + 3] = 0.0;  // pad
+//         }
+//   device.queue.writeBuffer(particleBuf, 0, arr);
+// }
+// initialize particles on a uniform grid over the x–z slice
+// choose a logical grid resolution for particles
+// npx * npz should be >= N_PARTICLES
+const aspect = nx / nz;
+let npx = Math.max(1, Math.round(Math.sqrt(N_PARTICLES * aspect)));
+let npz = Math.max(1, Math.ceil(N_PARTICLES / npx));
+
+// spacing in index space
+const dxp = nx / npx; // width of one particle cell in x
+const dzp = nz/ npz; // height of one particle cell in z
+
+{
+  const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
+
+  for (let i = 0; i < N_PARTICLES; i++) {
+    const gx = i % npx;             // 0 .. npx-1
+    const gz = Math.floor(i / npx); // 0 .. npz-1 (until we run out of particles)
+
+    const base = 4 * i;
+
+    // put the particle at the center of its logical cell,
+    // mapped to [0, nx) x [0, nz)
+    arr[base + 0] = (gx + 0.5) * dxp; // x in [0, nx)
+    arr[base + 1] = (gz + 0.5) * dzp; // z in [0, nz)
+    arr[base + 2] = MAX_LIFE_STEPS;   // life
+    arr[base + 3] = 0.0;              // pad
+  }
+
+  device.queue.writeBuffer(particleBuf, 0, arr);
+}
+
+
 
 // uniforms: N (as u32) + padding to 16 bytes
-const partUniformData = new Uint32Array([N_PARTICLES, 0, 0, 0]);
+// PartUniforms: [N, frame, maxLifeSteps, pad]
+const partUniformData = new Uint32Array([N_PARTICLES, 0, MAX_LIFE_STEPS, 0]);
 const partUniformBuf = device.createBuffer({
   size: partUniformData.byteLength,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -195,20 +240,23 @@ const partUniformBuf = device.createBuffer({
 device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
 
 
-      const advectModule = device.createShaderModule({
-  code: /* wgsl */ `
+
+          const advectModule = device.createShaderModule({
+        code: /* wgsl */ `
 struct Dims { data: array<u32> };
 
 struct Particle {
   x: f32,
   z: f32,
+  life: f32,
+  pad: f32,
 };
 
 struct PartUniforms {
   N: u32,
-  _pad0: u32,
-  _pad1: u32,
-  _pad2: u32,
+  frame: u32,
+  maxLifeSteps: u32,
+  _pad: u32,
 };
 
 @group(0) @binding(0) var<storage, read_write> particles : array<Particle>;
@@ -222,6 +270,13 @@ fn NX() -> u32 { return dims.data[0]; }
 fn NY() -> u32 { return dims.data[1]; }
 fn NZ() -> u32 { return dims.data[2]; }
 fn J () -> u32 { return dims.data[3]; }
+
+// simple hash-based random in [0,1)
+fn rand01(i: u32, frame: u32) -> f32 {
+  var n = i ^ (frame * 747796405u + 2891336453u);
+  n = (n ^ (n >> 16u)) * 2246822519u;
+  return f32(n & 0x00FFFFFFu) / f32(0x01000000u);
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -242,23 +297,66 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let uvel = u[idx];
   let wvel = w[idx];
 
-  // NOTE: dt is baked in from the host; you can add it to uniforms if you want
   let dt = 0.2;
 
   // simple forward Euler advection in slice space
-  p.x = p.x + uvel * dt;
-  p.z = p.z + wvel * dt;
+let dxp = uvel * dt;
+let dzp = wvel * dt;
+
+p.x = p.x + dxp;
+p.z = p.z + dzp;
 
   // wrap around domain so particles don't leave
+  // NOT CORRECT BEHAVIOR - PLACEHOLDER UNTIL 3D PARTICLE SIMULATION AND WE'RE NOT DOING JUST A SLICE
   if (p.x < 0.0) { p.x = p.x + nx; }
   if (p.x >= nx) { p.x = p.x - nx; }
   if (p.z < 0.0) { p.z = p.z + nz; }
   if (p.z >= nz) { p.z = p.z - nz; }
 
+  // ---- distance-based life decay + small random part ----
+let dist = sqrt(dxp * dxp + dzp * dzp);  // distance moved this step
+
+// tune these two constants however you like:
+let distScale = 15.0;                     // how much distance eats life
+let baseCost  = 0.1;                     // minimum decay per step
+
+// small random extra in [-noiseAmp/2, +noiseAmp/2]
+let noiseAmp = 10.0;
+let jitter = noiseAmp * (rand01(idxP, U.frame) - 0.5);
+
+let decay = baseCost + distScale * dist + jitter;
+
+p.life = p.life - decay;
+
+  // respawn when life is over
+if (p.life <= 0.0) {
+  // Rebuild the same logical grid layout using idxP
+  let Np = U.N;
+
+  // near-square grid
+  let rootN = sqrt(f32(Np));
+  var npx = u32(rootN);
+  if (npx < 1u) {
+    npx = 1u;
+  }
+  let npz = (Np + npx - 1u) / npx;
+
+  let gx = idxP % npx;
+  let gz = idxP / npx;
+
+  let dxp = nx / f32(npx);
+  let dzp = nz / f32(npz);
+
+  p.x = (f32(gx) + 0.5) * dxp;
+  p.z = (f32(gz) + 0.5) * dzp;
+  p.life = f32(U.maxLifeSteps);
+}
+
   particles[idxP] = p;
 }
 `,
-});
+      });
+
 
 
       const advectBGL = device.createBindGroupLayout({
@@ -400,7 +498,10 @@ struct Dims { data: array<u32> };
 struct Particle {
   x: f32,
   z: f32,
+  life: f32,
+  pad: f32,
 };
+
 
 struct PartUniforms {
   N: u32,
@@ -408,6 +509,7 @@ struct PartUniforms {
   _pad1: u32,
   _pad2: u32,
 };
+
 
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -511,6 +613,7 @@ primitive: { topology: "triangle-list" },
       let accumulator = 0;
       const maxFrameDt = 1 / 15;
       const subDt = dt;
+      let frameIndex = 0;
 
       async function frame(now: number) {
         if (!running) return;
@@ -522,6 +625,11 @@ primitive: { topology: "triangle-list" },
         setAccumulatedTime((accTime) => accTime + dtSec);
 
         device.pushErrorScope("validation");
+
+        frameIndex++;
+partUniformData[1] = frameIndex; // update frame
+device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
+
 
         const encoder = device.createCommandEncoder();
 
