@@ -248,10 +248,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         });
 
         // 6 -- radiative cooling
-        radCool.dispatch(pass, {
-            theta_p: io.state.theta_p,
-            rhs_theta_p: io.out.rhs_theta_p,
-        });
+        // radCool.dispatch(pass, {
+        //     theta_p: io.state.theta_p,
+        //     rhs_theta_p: io.out.rhs_theta_p,
+        // });
 
         // 7 - add moisture and heat at the bottom
         // surfRelax.dispatch(pass, {

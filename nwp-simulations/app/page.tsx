@@ -89,7 +89,7 @@ export default function Home() {
         computeRhs,
       });
 
-      const dt = 0.2;
+      const dt = 0.5;
 
       // ------------------------------------------------------------------
       // COMPUTE PIPELINE: theta slice to outTex
@@ -297,7 +297,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let uvel = u[idx];
   let wvel = w[idx];
 
-  let dt = 0.2;
+  let dt = 0.5;
 
   // simple forward Euler advection in slice space
 let dxp = uvel * dt;
@@ -310,8 +310,8 @@ p.z = p.z + dzp;
   // NOT CORRECT BEHAVIOR - PLACEHOLDER UNTIL 3D PARTICLE SIMULATION AND WE'RE NOT DOING JUST A SLICE
   if (p.x < 0.0) { p.x = p.x + nx; }
   if (p.x >= nx) { p.x = p.x - nx; }
-  if (p.z < 0.0) { p.z = p.z + nz; }
-  if (p.z >= nz) { p.z = p.z - nz; }
+  // if (p.z < 0.0) { p.z = p.z + nz; }
+  // if (p.z >= nz) { p.z = p.z - nz; }
 
   // ---- distance-based life decay + small random part ----
 let dist = sqrt(dxp * dxp + dzp * dzp);  // distance moved this step

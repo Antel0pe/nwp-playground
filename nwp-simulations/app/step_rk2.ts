@@ -498,16 +498,14 @@ export function makeStepRK2(opts: {
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qc_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
             // Microphysics on star state: (theta_p★, qv★, qc★)
-            micro.microphysics(
-                pass,
-                theta_p_star,   // provisional theta'
-                qv_star,        // provisional qv
-                qc_star,        // provisional qc
-                fields.theta0,  // background θ₀
-                fields.p0       // background p₀
-            );
-
-            
+            // micro.microphysics(
+            //     pass,
+            //     theta_p_star,   // provisional theta'
+            //     qv_star,        // provisional qv
+            //     qc_star,        // provisional qc
+            //     fields.theta0,  // background θ₀
+            //     fields.p0       // background p₀
+            // );
 
             // projection.project(pass, u_star, v_star, w_star, 100)
             projection4.project(pass, u_star, v_star, w_star)
@@ -554,14 +552,14 @@ export function makeStepRK2(opts: {
             // Microphysics on FINAL state: (theta_p_new, qv, qc)
             // - theta_p_new is your final θ' buffer
             // - fields.qv / fields.qc are the prognostic moisture fields
-            micro.microphysics(
-                pass,
-                theta_p_new,
-                qv_new,
-                qc_new,
-                fields.theta0,
-                fields.p0
-            );
+            // micro.microphysics(
+            //     pass,
+            //     theta_p_new,
+            //     qv_new,
+            //     qc_new,
+            //     fields.theta0,
+            //     fields.p0
+            // );
 
             // Now project final velocities
             // projection.project(pass, u_new, v_new, w_new, 100);
