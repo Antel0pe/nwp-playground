@@ -51,6 +51,7 @@ const QC_CRIT    : f32 = 1e-4;
 const RAIN_FRAC  : f32 = 0.3;
 const DT_NEWTON  : f32 = 0.05;
 const MAX_ITER   : u32 = 6u;
+const SATURATION_ADJUSTMENT: f32 = 0.3;
 
 fn exner(p: f32) -> f32 {
   // Π = (p / p_ref)^(R/cp)
@@ -170,10 +171,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (qv_f < 0.0) { qv_f = 0.0; }
   if (qc_f < 0.0) { qc_f = 0.0; }
 
-  // --- write back: in-place update of theta_p, qv, qc ---
-  theta_p[i] = theta_f - theta_base;
-  qv[i]      = qv_f;
-  qc[i]      = qc_f;
+  let theta_new = theta_ijk + SATURATION_ADJUSTMENT * (theta_f - theta_ijk);
+  let qv_new    = qv_ijk    + SATURATION_ADJUSTMENT * (qv_f   - qv_ijk);
+  let qc_new    = qc_ijk    + SATURATION_ADJUSTMENT * (qc_f   - qc_ijk);
+
+  // clamp negatives
+  var qv_final = qv_new;
+  var qc_final = qc_new;
+  if (qv_final < 0.0) { qv_final = 0.0; }
+  if (qc_final < 0.0) { qc_final = 0.0; }
+
+  // write back perturbation
+  theta_p[i] = theta_new - theta_base;
+  qv[i]      = qv_final;
+  qc[i]      = qc_final;
 }
 `,
   });

@@ -86,9 +86,9 @@ const rhs_qc_arr = new Float32Array(N);
 const rhs_u_arr = new Float32Array(N);
 const rhs_v_arr = new Float32Array(N);
 
-const nu = 10.0;
-const kappa = 10.0;
-const Dq = 10.0;
+const nu = 10.0; // momentum
+const kappa = 10.0; // thermal
+const Dq = 10.0; // moisture
 
 
   // ------------------ Constants (match your Python) ------------------
@@ -116,11 +116,11 @@ const z_lid = 2000.0;
 const dtheta_dz_free = 0.003;   // 3 K/km, similar to what you had
 
 // Above lid: stronger stability (acts as ceiling)
-const dtheta_dz_lid  = 0.008;   // 8 K/km (tune this if you want a stronger/weaker lid)
+const dtheta_dz_lid  = 0.02;   // 8 K/km (tune this if you want a stronger/weaker lid)
 
 // Background relative humidity profile
 // Below lid: moist environment so edges aren't instantly shredded
-const RH_free = 0.8;            // 80% RH below lid
+const RH_free = 0.;6            // 80% RH below lid
 
 // At top of domain: much drier environment
 const RH_top  = 0.4;            // 40% RH near top (can go lower if you want)
@@ -155,20 +155,20 @@ function RH_bg_profile(z: number, Lz: number): number {
   const rb_xy = 800.0, rb_z = 300.0;
 
   const RH_bubble = 0.95;
-  const theta_amp = 0.5;                    // K
+  const theta_amp = 2.5;                    // K
 
   // Surface forcing params
-  const Nbl = 0;                            // number of bottom levels forced
-  const delta_theta_core = 1.5;             // K
+  const Nbl = 2;                            // number of bottom levels forced
+  const delta_theta_core = 0.3;             // K
   const RH_surf_core = 0.9;
 
   // Thermo/physics params you use elsewhere
   const Lv = 2.5e6, eps = 0.622;
   const tau_damp_w = 300.0;
   const tau_rad = 1800.0;
-  const tau_surf = 100.0;
-  const qc_crit = 1e-4;
-  const rain_frac = 0.3;
+  const tau_surf = 400.0;
+  const qc_crit = 1e-5;
+  const rain_frac = 0.1;
 
   // ------------------ Precompute per-level z centers ------------------
   const zs = new Float32Array(nz);
