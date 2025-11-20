@@ -95,13 +95,24 @@ export default function Home() {
       // COMPUTE PIPELINE: theta slice to outTex
       // ------------------------------------------------------------------
       const thetaModule = device.createShaderModule({
-        code: /* wgsl */ `
+  code: /* wgsl */ `
 struct Dims { data: array<u32> }; // [0]=nx, [1]=ny, [2]=nz, [3]=j
+
+struct ViewUniforms {
+  mode: u32,
+  showClouds: u32,  // 0 = off, 1 = on
+  _pad1: u32,
+  _pad2: u32,
+};
 
 @group(0) @binding(0) var<storage, read> theta_p : array<f32>;
 @group(0) @binding(1) var outImg : texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<storage, read> dims : Dims;
 @group(0) @binding(3) var<storage, read> qc : array<f32>;
+@group(0) @binding(4) var<storage, read> qv : array<f32>;       // water vapour
+@group(0) @binding(5) var<storage, read> theta0 : array<f32>;   // base theta
+@group(0) @binding(6) var<storage, read> p0 : array<f32>;       // base p
+@group(0) @binding(7) var<uniform>      V : ViewUniforms;
 
 fn NX() -> u32 { return dims.data[0]; }
 fn NY() -> u32 { return dims.data[1]; }
@@ -112,6 +123,38 @@ fn colormap_blue_red(v_in: f32) -> vec3<f32> {
   let v = clamp(v_in, 0.0, 1.0);
   return vec3<f32>(v, 0.0, 1.0 - v);
 }
+
+fn colormap_rh(v_in: f32) -> vec3<f32> {
+  let v = clamp(v_in, 0.0, 1.0);
+
+  // start = white
+  let c0 = vec3<f32>(1.0, 1.0, 1.0);
+  // end   = deep blue
+  let c1 = vec3<f32>(0.0, 0.0, 0.5);
+
+  // linear interpolation: mix(c0, c1, v)
+  return c0 * (1.0 - v) + c1 * v;
+}
+
+const R_OVER_CP : f32 = 0.2857143;   // ~287/1004
+const P_REF     : f32 = 100000.0;    // 1000 hPa
+const EPS       : f32 = 0.622;
+
+fn exner(p: f32) -> f32 {
+  return pow(p / P_REF, R_OVER_CP);
+}
+
+fn sat_vapor_pressure(T: f32) -> f32 {
+  let Tc = T - 273.15;
+  // Tetens over water
+  return 610.94 * exp(17.625 * Tc / (Tc + 243.04));
+}
+
+fn saturation_mixing_ratio(T: f32, p: f32) -> f32 {
+  let es = sat_vapor_pressure(T);
+  return EPS * es / max(p - es, 1.0);
+}
+
 
 @compute @workgroup_size(16,16)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -125,20 +168,44 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   // flat idx = i + nx*(j + ny*k)
   let idx = i + NX() * (j + NY() * k);
 
-  let t  = theta_p[idx];
   let qc_val = qc[idx];
 
-  let v = clamp((t + 2.0) / 4.0, 0.0, 1.0);
-  var rgb = colormap_blue_red(v);
+  var rgb : vec3<f32>;
 
-  if (qc_val > 1e-4) {
-    rgb = vec3<f32>(1.0, 1.0, 0.0);
+  if (V.mode == 0u) {
+    // theta_p view (same scaling as before)
+    let t = theta_p[idx];
+    let v = clamp((t + 2.0) / 4.0, 0.0, 1.0);
+    rgb = colormap_blue_red(v);
+  } else {
+  // RH view: compute RH = qv / qs(T, p0)
+  let th_tot = theta0[idx] + theta_p[idx];
+  let p_cell = p0[idx];
+
+  let Pi = exner(p_cell);
+  let T  = th_tot * Pi;
+  let qs = saturation_mixing_ratio(T, p_cell);
+
+  var rh = 0.0;
+  if (qs > 0.0) {
+    rh = qv[idx] / qs;
   }
+
+  let v = clamp(rh, 0.0, 1.0);
+  rgb = colormap_rh(v);
+}
+
+
+  if (V.showClouds == 1u && qc_val > 1e-4) {
+  rgb = vec3<f32>(1.0, 1.0, 0.0);
+}
+
 
   textureStore(outImg, vec2<i32>(i32(i), i32(k)), vec4<f32>(rgb, 1.0));
 }
 `,
-      });
+});
+
 
       const thetaPipeline = device.createComputePipeline({
         layout: "auto",
@@ -154,15 +221,29 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       });
       device.queue.writeBuffer(dimsBuf, 0, dimsU32);
 
+      // 0 = theta_p, 1 = RH (rhs_qv)
+const viewUniformData = new Uint32Array([0, 1, 0, 0]);
+const viewUniformBuf = device.createBuffer({
+  size: viewUniformData.byteLength,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+
+
       const thetaBind = device.createBindGroup({
-        layout: thetaPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: fields.theta_p } },
-          { binding: 1, resource: outView },
-          { binding: 2, resource: { buffer: dimsBuf } },
-          { binding: 3, resource: { buffer: fields.qc } },
-        ],
-      });
+  layout: thetaPipeline.getBindGroupLayout(0),
+  entries: [
+    { binding: 0, resource: { buffer: fields.theta_p } },
+    { binding: 1, resource: outView },
+    { binding: 2, resource: { buffer: dimsBuf } },
+    { binding: 3, resource: { buffer: fields.qc } },
+    { binding: 4, resource: { buffer: fields.qv } },        // qv
+    { binding: 5, resource: { buffer: fields.theta0 } },    // or fields.theta0, whichever you use
+    { binding: 6, resource: { buffer: fields.p0 } },        // same
+    { binding: 7, resource: { buffer: viewUniformBuf } },   // ViewUniforms
+  ],
+});
+
 
       // ------------------------------------------------------------------
       // --- PARTICLES: buffers + advect compute pipeline
@@ -418,21 +499,45 @@ const advectBind = device.createBindGroup({
       if (paneRef.current) {
         const pane = new Pane({ container: paneRef.current });
         const controls = {
-          jSlice: initialJSlice,
-        };
+  jSlice: initialJSlice,
+  viewField: "theta" as "theta" | "rh",
+  showClouds: true,
+};
 
-        pane
-          .addBinding(controls, "jSlice", {
-            min: 0,
-            max: ny - 1,
-            step: 1,
-            label: "Y slice (j)",
-          })
-          .on("change", (ev: { value: number }) => {
-            const j = ev.value | 0;
-            dimsU32[3] = j;
-            device.queue.writeBuffer(dimsBuf, 0, dimsU32);
-          });
+
+pane
+  .addBinding(controls, "jSlice", {
+    min: 0,
+    max: ny - 1,
+    step: 1,
+    label: "Y slice (j)",
+  })
+  .on("change", (ev: { value: number }) => {
+    const j = ev.value | 0;
+    dimsU32[3] = j;
+    device.queue.writeBuffer(dimsBuf, 0, dimsU32);
+  });
+
+pane
+  .addBinding(controls, "viewField", {
+    label: "Field",
+    options: {
+      "Theta (θ')": "theta",
+      "RH (qv/qs)": "rh",
+    },
+  })
+  .on("change", (ev: { value: "theta" | "rh" }) => {
+    viewUniformData[0] = ev.value === "rh" ? 1 : 0;
+    device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+  });
+
+  pane.addBinding(controls, "showClouds", { label: "Show Clouds" })
+  .on("change", (ev: { value: boolean }) => {
+    viewUniformData[1] = ev.value ? 1 : 0;
+    device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+  });
+
+
       }
 
       // ------------------------------------------------------------------

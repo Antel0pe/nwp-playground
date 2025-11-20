@@ -48,10 +48,12 @@ const Lv         : f32 = 2.5e6;
 const eps        : f32 = 0.622;
 const TOL        : f32 = 1e-12;
 const QC_CRIT    : f32 = 1e-4;
-const RAIN_FRAC  : f32 = 0.3;
+const RAIN_FRAC  : f32 = 0.0;
 const DT_NEWTON  : f32 = 0.05;
 const MAX_ITER   : u32 = 6u;
-const SATURATION_ADJUSTMENT: f32 = 0.3;
+const SATURATION_ADJUSTMENT: f32 = 0.1;
+const LATENT_HEATING_FACTOR : f32 = 0.1;  // 1.0 = full heating, 0.0 = no latent heating
+const UNSAT_REL_TOL: f32 = 0.1; // 1% band
 
 fn exner(p: f32) -> f32 {
   // Π = (p / p_ref)^(R/cp)
@@ -87,7 +89,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // --- local base state ---
   let p0_ijk     = p0[i];
   let Pi_ijk     = exner(p0_ijk);
-  let c0_ijk     = Lv / (cp_air * Pi_ijk);
+  let c0_ijk     = LATENT_HEATING_FACTOR * Lv / (cp_air * Pi_ijk);
 
   let theta_pert = theta_p[i];
   let theta_base = theta0[i];
@@ -107,8 +109,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var theta_f: f32 = 0.0;
   var qv_f   : f32 = 0.0;
   var qc_f   : f32 = 0.0;
+  let RH_unsat = qt_i / qs_unsat;
 
-  if (qt_i <= qs_unsat + TOL) {
+// if (qt_i <= qs_unsat * (1.0 - UNSAT_REL_TOL)) {
+if (RH_unsat < 0.98) {
     // Fully unsaturated
     qc_f    = 0.0;
     qv_f    = qt_i;
