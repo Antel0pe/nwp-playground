@@ -6,6 +6,7 @@ export type AdvectIO = {
   u: GPUBuffer;
   v: GPUBuffer;
   w: GPUBuffer;
+  rho0: GPUBuffer;
   rhs_out: GPUBuffer;  // accumulate tendency into this buffer
 };
 
@@ -37,7 +38,8 @@ struct AdvUniforms {
 @group(0) @binding(2) var<storage, read>       v    : array<f32>;
 @group(0) @binding(3) var<storage, read>       w    : array<f32>;
 @group(0) @binding(4) var<storage, read_write> rhs  : array<f32>;
-@group(0) @binding(5) var<uniform>             U    : AdvUniforms;
+@group(0) @binding(5) var<storage, read>       rho0 : array<f32>; 
+@group(0) @binding(6) var<uniform>             U    : AdvUniforms;
 
 fn wrap_inc(i: u32, n: u32) -> u32 { return select(i + 1u, 0u, i + 1u >= n); }
 fn wrap_dec(i: u32, n: u32) -> u32 { return select(i - 1u, n - 1u, i == 0u); }
@@ -78,6 +80,22 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let phi_zp = phi[i_zp];
   let phi_zm = phi[i_zm];
 
+    let rho_c  = rho0[i];
+  let rho_xp = rho0[i_xp];
+  let rho_xm = rho0[i_xm];
+  let rho_yp = rho0[i_yp];
+  let rho_ym = rho0[i_ym];
+  let rho_zp = rho0[i_zp];
+  let rho_zm = rho0[i_zm];
+
+  // face-centered rho0 (simple average like velocity faces)
+  let rho_x_p = 0.5 * (rho_c  + rho_xp);
+  let rho_x_m = 0.5 * (rho_xm + rho_c);
+  let rho_y_p = 0.5 * (rho_c  + rho_yp);
+  let rho_y_m = 0.5 * (rho_ym + rho_c);
+  let rho_z_p = 0.5 * (rho_c  + rho_zp);
+  let rho_z_m = 0.5 * (rho_zm + rho_c);
+
   // face-centered velocities (averages)
   let ux_p = 0.5 * (u[i]    + u[i_xp]);
   let ux_m = 0.5 * (u[i_xm] + u[i]);
@@ -94,20 +112,22 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let phi_z_up_p = select(phi_zp, phi_c,  wz_p > 0.0);
   let phi_z_up_m = select(phi_c,  phi_zm, wz_m > 0.0);
 
-  // fluxes
-  let Fx_p = ux_p * phi_x_up_p;
-  let Fx_m = ux_m * phi_x_up_m;
-  let Fy_p = vy_p * phi_y_up_p;
-  let Fy_m = vy_m * phi_y_up_m;
-  let Fz_p = wz_p * phi_z_up_p;
-  let Fz_m = wz_m * phi_z_up_m;
+  // anelastic conservative fluxes: rho0 * phi * U
+  let Fx_p = rho_x_p * ux_p * phi_x_up_p;
+  let Fx_m = rho_x_m * ux_m * phi_x_up_m;
+  let Fy_p = rho_y_p * vy_p * phi_y_up_p;
+  let Fy_m = rho_y_m * vy_m * phi_y_up_m;
+  let Fz_p = rho_z_p * wz_p * phi_z_up_p;
+  let Fz_m = rho_z_m * wz_m * phi_z_up_m;
 
   // divergence
   let dFx = (Fx_p - Fx_m) * U.inv_dx;
   let dFy = (Fy_p - Fy_m) * U.inv_dy;
   let dFz = (Fz_p - Fz_m) * U.inv_dz;
 
-  rhs[i] = rhs[i] - (dFx + dFy + dFz);
+  let div_rho_phi_u = dFx + dFy + dFz;
+  rhs[i] = rhs[i] - div_rho_phi_u / rho_c;
+
 }
 `,
   });
@@ -141,7 +161,8 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
         { binding: 2, resource: { buffer: io.v } },
         { binding: 3, resource: { buffer: io.w } },
         { binding: 4, resource: { buffer: io.rhs_out } },
-        { binding: 5, resource: { buffer: uniforms } },
+        { binding: 5, resource: { buffer: io.rho0 } },
+        { binding: 6, resource: { buffer: uniforms } },
       ],
     });
     pass.setPipeline(pipeline);

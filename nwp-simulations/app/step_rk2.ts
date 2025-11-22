@@ -3,8 +3,6 @@ import type { SimDims, FieldBuffers, Params } from "./init_boussinesq";
 import type { ComputeRhsArtifacts } from "./compute_rhs";
 import { makeProjection } from "./projection/project_velocity";
 import { makeMicrophysicsSaturationAdjust } from "./microphysics_saturation";
-import { makeDivergenceDebugger } from "./projection/debug_divergence";
-import { makeFftProjectVelocity } from "./projection/fft_project_velocity";
 import { makeProjectionFD4 } from "./projection/project_velocity_fd4";
 
 // small WGSL utils (unchanged)
@@ -509,7 +507,7 @@ export function makeStepRK2(opts: {
 
 
             // projection.project(pass, u_star, v_star, w_star, 100)
-            projection4.project(pass, u_star, v_star, w_star)
+            projection4.project(pass, u_star, v_star, w_star, fields.rho0, fields.inv_rho0)
             
             pass.end(); // <<< close pass before changing alpha
         }
@@ -564,7 +562,7 @@ export function makeStepRK2(opts: {
 
             // Now project final velocities
             // projection.project(pass, u_new, v_new, w_new, 100);
-            projection4.project(pass, u_new, v_new, w_new);
+            projection4.project(pass, u_new, v_new, w_new, fields.rho0, fields.inv_rho0);
             
             pass.end();
         }

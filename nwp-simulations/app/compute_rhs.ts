@@ -192,16 +192,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             phi: io.state.u,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_u,
+            rho0: fields.rho0
         });
         advect.dispatch(pass, {
             phi: io.state.v,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_v,
+            rho0: fields.rho0
         });
         advect.dispatch(pass, {
             phi: io.state.w,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_w,   // add dv_adv to existing rhs_w (with buoyancy/damping)
+            rho0: fields.rho0
         });
 
 
@@ -210,16 +213,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             phi: io.state.theta_p,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_theta_p,
+            rho0: fields.rho0
         });
         advect.dispatch(pass, {
             phi: io.state.qv,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_qv,
+            rho0: fields.rho0
         });
         advect.dispatch(pass, {
             phi: io.state.qc,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_qc,
+            rho0: fields.rho0
         });
 
         // ---- 4) velocity diffusion (ν ∇² u,v,w)

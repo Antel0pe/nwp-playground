@@ -45,6 +45,8 @@ type Fd4Pipelines = {
   updateP: GPUComputePipeline;
   copyScalar: GPUComputePipeline;
   projectSubtract: GPUComputePipeline;
+  mulCoeff: GPUComputePipeline;
+  mulCoeffInplace: GPUComputePipeline;
 };
 
 export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
@@ -72,8 +74,8 @@ export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
     const invdy12 = 1.0 / (12.0 * dy);
     const invdz12 = 1.0 / (12.0 * dz);
 
-    f32[8]  = invdx12;
-    f32[9]  = invdy12;
+    f32[8] = invdx12;
+    f32[9] = invdy12;
     f32[10] = invdz12;
     f32[11] = 0.0;
   }
@@ -245,6 +247,49 @@ fn idx3(ix:u32, iy:u32, iz:u32)->u32{
   return iz*FD4.sz + iy*FD4.sy + ix*FD4.sx;
 }
 `;
+
+  const MUL_COEFF_WGSL = /* wgsl */`
+struct MulU {
+  N: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+
+@group(0) @binding(0) var<storage, read>       coeff : array<f32>;
+@group(0) @binding(1) var<storage, read>       src   : array<f32>;
+@group(0) @binding(2) var<storage, read_write> dst   : array<f32>;
+@group(0) @binding(3) var<uniform>             U     : MulU;
+
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= U.N) { return; }
+  dst[i] = coeff[i] * src[i];
+}
+`;
+
+const MUL_COEFF_INPLACE_WGSL = /* wgsl */`
+struct MulU {
+  N: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+
+@group(0) @binding(0) var<storage, read>       coeff : array<f32>;
+@group(0) @binding(1) var<storage, read_write> buf   : array<f32>;
+@group(0) @binding(2) var<uniform>             U     : MulU;
+
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= U.N) { return; }
+  buf[i] = coeff[i] * buf[i];
+}
+`;
+
+
 
   // ---------- div4 ----------
   const DIV4_WGSL = /* wgsl */`
@@ -707,6 +752,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       compute: { module: device.createShaderModule({ code: PROJECT_SUB_WGSL }), entryPoint: "main" },
       label: "fd4_projectSubtract",
     }),
+    mulCoeff: device.createComputePipeline({
+      layout: "auto",
+      compute: { module: device.createShaderModule({ code: MUL_COEFF_WGSL }), entryPoint: "main" },
+      label: "fd4_mulCoeff",
+    }),
+    mulCoeffInplace: device.createComputePipeline({
+  layout: "auto",
+  compute: { module: device.createShaderModule({ code: MUL_COEFF_INPLACE_WGSL }), entryPoint: "main" },
+  label: "fd4_mulCoeffInplace",
+}),
+
   };
 
   // ---------- small helpers ----------
@@ -829,6 +885,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     pass.dispatchWorkgroups(wgCount);
   }
 
+  function passMulCoeff(
+    pass: GPUComputePassEncoder,
+    coeff: GPUBuffer,
+    src: GPUBuffer,
+    dst: GPUBuffer
+  ) {
+    const bg = device.createBindGroup({
+      layout: pipelines.mulCoeff.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: coeff } },
+        { binding: 1, resource: { buffer: src } },
+        { binding: 2, resource: { buffer: dst } },
+        { binding: 3, resource: { buffer: uniforms.copyU } }, // layout: N only
+      ],
+    });
+    pass.setPipeline(pipelines.mulCoeff);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(wgCount);
+  }
+
+function passMulCoeffInplace(
+  pass: GPUComputePassEncoder,
+  coeff: GPUBuffer,
+  buf: GPUBuffer
+) {
+  const bg = device.createBindGroup({
+    layout: pipelines.mulCoeffInplace.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: coeff } },
+      { binding: 1, resource: { buffer: buf } },
+      { binding: 2, resource: { buffer: uniforms.copyU } }, // N-only uniform
+    ],
+  });
+  pass.setPipeline(pipelines.mulCoeffInplace);
+  pass.setBindGroup(0, bg);
+  pass.dispatchWorkgroups(wgCount);
+}
+
   function passUpdatePsiR(pass: GPUComputePassEncoder) {
     const bg = device.createBindGroup({
       layout: pipelines.updatePsiR.getBindGroupLayout(0),
@@ -894,64 +988,92 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     pass.dispatchWorkgroups(wgCount);
   }
 
-  function applyL4(pass: GPUComputePassEncoder) {
-    // gx,gy,gz = grad4(p); Ap = div4(gx,gy,gz)
+function applyL4(pass: GPUComputePassEncoder, inv_rho0: GPUBuffer) {
+    // gx,gy,gz = grad4(p)
     passGrad4(pass, buffers.p, buffers.gx, buffers.gy, buffers.gz);
+
+    // scale by inv_rho0: gx,gy,gz <- inv_rho0 * g*
+passMulCoeffInplace(pass, inv_rho0, buffers.gx);
+passMulCoeffInplace(pass, inv_rho0, buffers.gy);
+passMulCoeffInplace(pass, inv_rho0, buffers.gz);
+
+
+    // Ap = div4(inv_rho0*grad4(p))
     passDiv4(pass, buffers.gx, buffers.gy, buffers.gz, buffers.Ap);
   }
 
+
   // ---------- public synchronous project ----------
-  function project(pass: GPUComputePassEncoder, u: GPUBuffer, v: GPUBuffer, w: GPUBuffer, maxIter = 40) {
+function project(
+  pass: GPUComputePassEncoder,
+  u: GPUBuffer, v: GPUBuffer, w: GPUBuffer,
+  rho0: GPUBuffer, inv_rho0: GPUBuffer,
+  maxIter = 40
+) {
     const encoder = device.createCommandEncoder();
 
-    // 1) bDiv = div4(u*,v*,w*)
-      passDiv4(pass, u, v, w, buffers.bDiv);
-    
-      // 2) subtract mean(bDiv) via GPU reduction
-      passSum(pass, buffers.bDiv);   // partials
+    // 1) bDiv = div4(rho0*u*, rho0*v*, rho0*w*)
+    // reuse gx/gy/gz as scratch for scaled velocities
+    passMulCoeff(pass, rho0, u, buffers.gx);
+    passMulCoeff(pass, rho0, v, buffers.gy);
+    passMulCoeff(pass, rho0, w, buffers.gz);
+    passDiv4(pass, buffers.gx, buffers.gy, buffers.gz, buffers.bDiv);
 
-      passReduce(pass, buffers.sumDiv); // sumDiv[0] = sum
 
-      passSubtractMean(pass);
+    // 2) subtract mean(bDiv) via GPU reduction
+    passSum(pass, buffers.bDiv);   // partials
+
+    passReduce(pass, buffers.sumDiv); // sumDiv[0] = sum
+
+    passSubtractMean(pass);
 
     // 3) psi = 0; r = b; p = r
-      passClear(pass, buffers.psi);
-      passCopy(pass, buffers.bDiv, buffers.r);
-      passCopy(pass, buffers.r, buffers.p);
+    passClear(pass, buffers.psi);
+    passCopy(pass, buffers.bDiv, buffers.r);
+    passCopy(pass, buffers.r, buffers.p);
 
     // 4) rsold = r·r
-      passDot(pass, buffers.r, buffers.r);
+    passDot(pass, buffers.r, buffers.r);
 
-      passReduce(pass, buffers.rsold);
+    passReduce(pass, buffers.rsold);
 
     // 5) CG iterations (fixed maxIter)
     for (let k = 0; k < maxIter; k++) {
       // Ap = L4(p)
-        applyL4(pass);
+      applyL4(pass, inv_rho0);
 
       // pAp = p·Ap
-        passDot(pass, buffers.p, buffers.Ap);
+      passDot(pass, buffers.p, buffers.Ap);
 
-        passReduce(pass, buffers.pAp);
+      passReduce(pass, buffers.pAp);
 
       // psi,r update using alpha
-        passUpdatePsiR(pass);
+      passUpdatePsiR(pass);
 
       // rsnew = r·r
-        passDot(pass, buffers.r, buffers.r);
+      passDot(pass, buffers.r, buffers.r);
 
-        passReduce(pass, buffers.rsnew);
+      passReduce(pass, buffers.rsnew);
 
       // p = r + beta*p
-        passUpdateP(pass);
+      passUpdateP(pass);
 
       // rsold = rsnew (scalar copy)
-        passCopyScalar(pass, buffers.rsnew, buffers.rsold);
+      passCopyScalar(pass, buffers.rsnew, buffers.rsold);
     }
 
-    // 6) compute grad4(psi) and subtract from u,v,w
-      passGrad4(pass, buffers.psi, buffers.gx, buffers.gy, buffers.gz);
-      passProjectSubtract(pass, u, v, w);
+    // 6) compute grad4(psi)
+    passGrad4(pass, buffers.psi, buffers.gx, buffers.gy, buffers.gz);
+
+    // scale: g <- inv_rho0 * g
+passMulCoeffInplace(pass, inv_rho0, buffers.gx);
+passMulCoeffInplace(pass, inv_rho0, buffers.gy);
+passMulCoeffInplace(pass, inv_rho0, buffers.gz);
+
+
+    // subtract scaled gradient from velocity
+    passProjectSubtract(pass, u, v, w);
+
 
     device.queue.submit([encoder.finish()]);
   }

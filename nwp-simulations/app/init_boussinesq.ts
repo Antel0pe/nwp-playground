@@ -22,6 +22,8 @@ export type FieldBuffers = {
 rhs_qc: GPUBuffer;
 rhs_u: GPUBuffer;
 rhs_v: GPUBuffer;
+rho0: GPUBuffer;
+inv_rho0: GPUBuffer;
 };
 
 export type Params = {
@@ -85,6 +87,9 @@ const rhs_qc_arr = new Float32Array(N);
 
 const rhs_u_arr = new Float32Array(N);
 const rhs_v_arr = new Float32Array(N);
+
+const rho0 = new Float32Array(N);
+const inv_rho0 = new Float32Array(N);
 
 const nu = 10.0; // momentum
 const kappa = 10.0; // thermal
@@ -155,10 +160,10 @@ function RH_bg_profile(z: number, Lz: number): number {
   const rb_xy = 600.0, rb_z = 300.0;
 
   const RH_bubble = 0.85;
-  const theta_amp = 1.5;                    // K
+  const theta_amp = 0.5;                    // K
 
   // Surface forcing params
-  const Nbl = 2;                            // number of bottom levels forced
+  const Nbl = 0;                            // number of bottom levels forced
   const delta_theta_core = 0.1;             // K
   const RH_surf_core = 0.8;
 
@@ -278,6 +283,10 @@ function RH_bg_profile(z: number, Lz: number): number {
       qv_bg[id] = qv_bg_k;
       dtheta0_dz_arr[id] = dtheta_dz;
 
+      // density
+      rho0[id] = p0[id] / (R * T0_k);
+      inv_rho0[id] = 1.0 / rho0[id];
+
       // --- bubble + ICs as before ---
 
       const r2_xy = (x - xb) * (x - xb) + (y - yb) * (y - yb);
@@ -344,6 +353,8 @@ thermoPacked.set(qv_bg, 2 * N);
 rhs_qc: makeBuf(rhs_qc_arr),
 rhs_u: makeBuf(rhs_u_arr),
 rhs_v: makeBuf(rhs_v_arr),
+rho0: makeBuf(rho0),
+inv_rho0: makeBuf(inv_rho0),
   };
 
   const params: Params = { nu, kappa, Dq, dx, dy, dz, Lv, cp, R, p_ref, eps, g, tau_damp_w, tau_rad, Nbl, tau_surf, qc_crit, rain_frac };
