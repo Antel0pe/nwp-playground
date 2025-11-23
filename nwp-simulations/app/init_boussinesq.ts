@@ -159,19 +159,19 @@ function RH_bg_profile(z: number, Lz: number): number {
   const xb = Lx * 0.5, yb = Ly * 0.5, zb = 300.0;
   const rb_xy = 600.0, rb_z = 300.0;
 
-  const RH_bubble = 0.85;
-  const theta_amp = 0.5;                    // K
+  const RH_bubble = 0.7;
+  const theta_amp = 0.01;                    // K
 
   // Surface forcing params
-  const Nbl = 0;                            // number of bottom levels forced
+  const Nbl = 2;                            // number of bottom levels forced
   const delta_theta_core = 0.1;             // K
-  const RH_surf_core = 0.8;
+  const RH_surf_core = 0.9;
 
   // Thermo/physics params you use elsewhere
   const Lv = 2.5e6, eps = 0.622;
   const tau_damp_w = 300.0;
   const tau_rad = 1800.0;
-  const tau_surf = 150.0;
+  const tau_surf = 1.0;
   const qc_crit = 1e-5;
   const rain_frac = 0.1;
 
