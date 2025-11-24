@@ -56,8 +56,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ixm = wrap_dec(ix, nx);
   let iyp = wrap_inc(iy, ny);
   let iym = wrap_dec(iy, ny);
-  let izp = wrap_inc(iz, Ubuf.nz);
-  let izm = wrap_dec(iz, Ubuf.nz);
+  // let izp = wrap_inc(iz, Ubuf.nz);
+  // let izm = wrap_dec(iz, Ubuf.nz);
+  let izp = min(iz + 1u, Ubuf.nz - 1u);
+let izm = max(iz - 1u, 0u);
+
 
   let i    = idx;
   let i_xp = iz * sz + iy * sy + ixp * sx;
@@ -70,7 +73,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c   = phi[i];
   let xp  = phi[i_xp]; let xm = phi[i_xm];
   let yp  = phi[i_yp]; let ym = phi[i_ym];
-  let zp  = phi[i_zp]; let zm = phi[i_zm];
+  // let zp  = phi[i_zp]; let zm = phi[i_zm];
+    let zp_raw  = phi[i_zp];
+  let zm_raw  = phi[i_zm];
+
+  var zp = zp_raw;
+  var zm = zm_raw;
+
+  // Neumann BC: mirror across wall
+  if (iz == 0u) {
+    // φ_-1 = φ_+1
+    zm = zp_raw;
+  }
+  if (iz == Ubuf.nz - 1u) {
+    // φ_+1 = φ_-1
+    zp = zm_raw;
+  }
 
   let Lap = (xp - 2.0*c + xm) * Ubuf.inv_dx2 +
             (yp - 2.0*c + ym) * Ubuf.inv_dy2 +

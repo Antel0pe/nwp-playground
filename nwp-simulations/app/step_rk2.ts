@@ -4,6 +4,7 @@ import type { ComputeRhsArtifacts } from "./compute_rhs";
 import { makeProjection } from "./projection/project_velocity";
 import { makeMicrophysicsSaturationAdjust } from "./microphysics_saturation";
 import { makeProjectionFD4 } from "./projection/project_velocity_fd4";
+import { makeClampW } from "./clamp_w";
 
 // small WGSL utils (unchanged)
 const CLEAR_WGSL = /*wgsl*/`
@@ -460,7 +461,8 @@ export function makeStepRK2(opts: {
     }
 
     const projection = makeProjection({ device, dims });
-    const projection4 = makeProjectionFD4({device, dims})
+    const projection4 = makeProjectionFD4({device, dims});
+    const clampW = makeClampW({device, dims});
     function step(encoder: GPUCommandEncoder, dt: number) {
         // --- 1) set alpha = dt BEFORE opening any pass
         writeAlpha(dt); // writes to U_ax (uniform) — SAFE here
@@ -484,7 +486,9 @@ export function makeStepRK2(opts: {
             // s★ = s0 + dt * rhs1
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            clampW.dispatch(pass, w_star); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
+            clampW.dispatch(pass, w_star); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
             // qv★, qc★ = copies of s0
@@ -543,7 +547,9 @@ export function makeStepRK2(opts: {
 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_final); pass.dispatchWorkgroups(wg);
+            clampW.dispatch(pass, w_new); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
+            clampW.dispatch(pass, w_new);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qv_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qc_final); pass.dispatchWorkgroups(wg);

@@ -165,7 +165,7 @@ function RH_bg_profile(z: number, Lz: number): number {
   // Surface forcing params
   const Nbl = 2;                            // number of bottom levels forced
   const delta_theta_core = 0.1;             // K
-  const RH_surf_core = 0.9;
+  const RH_surf_core = 0.85;
 
   // Thermo/physics params you use elsewhere
   const Lv = 2.5e6, eps = 0.622;

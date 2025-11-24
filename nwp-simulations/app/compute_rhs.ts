@@ -5,6 +5,7 @@ import { makeDiffuseVelocity } from "./diffuse_velocity";
 import { makeDiffuseScalar } from "./diffuse_scalar";
 import { makeRadiativeCooling } from "./radiative_cooling";
 import { makeSurfaceRelax } from "./surface_relax";
+import { makeClampW } from "./clamp_w";
 
 export type BuildRHSIO = {
     state: {
@@ -141,6 +142,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const diffMoist = makeDiffuseScalar({ device, dims, coeff: params.Dq ?? 0.0 });
     const radCool = makeRadiativeCooling({ device, dims, params });
     const surfRelax = makeSurfaceRelax({ device, dims, params });
+    const clampW = makeClampW({ device, dims });
 
     // helper to build buoyancy bindgroup quickly
     const makeBG_buoy = (io: BuildRHSIO) =>
@@ -179,6 +181,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             },
         };
 
+        clampW.dispatch(pass, io.out.rhs_w);
+
         // ---- 1) buoyancy + damping + theta bg cooling
         {
             const bg = makeBG_buoy(io);
@@ -187,6 +191,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pass.dispatchWorkgroups(workgroups);
         }
 
+        clampW.dispatch(pass, io.out.rhs_w);
+
         // ---- 2) velocity advection (first-order upwind, conservative)
         advect.dispatch(pass, {
             phi: io.state.u,
@@ -194,18 +200,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             rhs_out: io.out.rhs_u,
             rho0: fields.rho0
         });
+
+        clampW.dispatch(pass, io.out.rhs_w);
+
         advect.dispatch(pass, {
             phi: io.state.v,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_v,
             rho0: fields.rho0
         });
+        clampW.dispatch(pass, io.out.rhs_w);
+
         advect.dispatch(pass, {
             phi: io.state.w,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_w,   // add dv_adv to existing rhs_w (with buoyancy/damping)
             rho0: fields.rho0
         });
+        clampW.dispatch(pass, io.out.rhs_w);
 
 
         // ---- 3) scalar advection (ordered right after buoyancy in the SAME pass)
@@ -215,18 +227,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             rhs_out: io.out.rhs_theta_p,
             rho0: fields.rho0
         });
+        clampW.dispatch(pass, io.out.rhs_w);
         advect.dispatch(pass, {
             phi: io.state.qv,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_qv,
             rho0: fields.rho0
         });
+        clampW.dispatch(pass, io.out.rhs_w);
         advect.dispatch(pass, {
             phi: io.state.qc,
             u: io.state.u, v: io.state.v, w: io.state.w,
             rhs_out: io.out.rhs_qc,
             rho0: fields.rho0
         });
+        clampW.dispatch(pass, io.out.rhs_w);
 
         // ---- 4) velocity diffusion (ν ∇² u,v,w)
         diffuseVel.dispatch(pass, {
@@ -237,21 +252,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             rhs_v: io.out.rhs_v,
             rhs_w: io.out.rhs_w,
         });
+        clampW.dispatch(pass, io.out.rhs_w);
 
         // ---- 5) scalar diffusion
         diffTheta.dispatch(pass, {
             phi: io.state.theta_p,
             rhs_out: io.out.rhs_theta_p,
         });
+        clampW.dispatch(pass, io.out.rhs_w);
 
         diffMoist.dispatch(pass, {
             phi: io.state.qv,
             rhs_out: io.out.rhs_qv,
         });
+        clampW.dispatch(pass, io.out.rhs_w);
         diffMoist.dispatch(pass, {
             phi: io.state.qc,
             rhs_out: io.out.rhs_qc,
         });
+        clampW.dispatch(pass, io.out.rhs_w);
 
         // // // 6 -- radiative cooling
         // radCool.dispatch(pass, {
@@ -269,6 +288,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             rhs_theta_p: io.out.rhs_theta_p,
             rhs_qv: io.out.rhs_qv,
         });
+        clampW.dispatch(pass, io.out.rhs_w);
     }
 
     return {

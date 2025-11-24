@@ -60,8 +60,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ixm = wrap_dec(ix, nx);
   let iyp = wrap_inc(iy, ny);
   let iym = wrap_dec(iy, ny);
-  let izp = wrap_inc(iz, Ubuf.nz);
-  let izm = wrap_dec(iz, Ubuf.nz);
+  // let izp = wrap_inc(iz, Ubuf.nz);
+  // let izm = wrap_dec(iz, Ubuf.nz);
+  let izp = min(iz + 1u, Ubuf.nz - 1u);
+let izm = max(iz - 1u, 0u);
+
 
   let i    = idx;
   let i_xp = iz * sz + iy * sy + ixp * sx;
@@ -75,7 +78,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let u_c  = u_in[i];
   let u_xp = u_in[i_xp]; let u_xm = u_in[i_xm];
   let u_yp = u_in[i_yp]; let u_ym = u_in[i_ym];
-  let u_zp = u_in[i_zp]; let u_zm = u_in[i_zm];
+  // let u_zp = u_in[i_zp]; let u_zm = u_in[i_zm];
+    let u_zp_raw = u_in[i_zp];
+  let u_zm_raw = u_in[i_zm];
+  var u_zp = u_zp_raw;
+  var u_zm = u_zm_raw;
+
+  if (iz == 0u)          { u_zm = u_zp_raw; }
+  if (iz == Ubuf.nz-1u)  { u_zp = u_zm_raw; }
+
   let Lu = (u_xp - 2.0*u_c + u_xm) * Ubuf.inv_dx2 +
            (u_yp - 2.0*u_c + u_ym) * Ubuf.inv_dy2 +
            (u_zp - 2.0*u_c + u_zm) * Ubuf.inv_dz2;
@@ -84,7 +95,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let v_c  = v_in[i];
   let v_xp = v_in[i_xp]; let v_xm = v_in[i_xm];
   let v_yp = v_in[i_yp]; let v_ym = v_in[i_ym];
-  let v_zp = v_in[i_zp]; let v_zm = v_in[i_zm];
+  // let v_zp = v_in[i_zp]; let v_zm = v_in[i_zm];
+    let v_zp_raw = v_in[i_zp];
+  let v_zm_raw = v_in[i_zm];
+  var v_zp = v_zp_raw;
+  var v_zm = v_zm_raw;
+
+  if (iz == 0u)          { v_zm = v_zp_raw; }
+  if (iz == Ubuf.nz-1u)  { v_zp = v_zm_raw; }
+
   let Lv = (v_xp - 2.0*v_c + v_xm) * Ubuf.inv_dx2 +
            (v_yp - 2.0*v_c + v_ym) * Ubuf.inv_dy2 +
            (v_zp - 2.0*v_c + v_zm) * Ubuf.inv_dz2;
@@ -93,7 +112,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let w_c  = w_in[i];
   let w_xp = w_in[i_xp]; let w_xm = w_in[i_xm];
   let w_yp = w_in[i_yp]; let w_ym = w_in[i_ym];
-  let w_zp = w_in[i_zp]; let w_zm = w_in[i_zm];
+  // let w_zp = w_in[i_zp]; let w_zm = w_in[i_zm];
+    let w_zp_raw = w_in[i_zp];
+  let w_zm_raw = w_in[i_zm];
+  var w_zp = w_zp_raw;
+  var w_zm = w_zm_raw;
+
+  if (iz == 0u) {
+    // w_-1 = -w_+1
+    w_zm = -w_zp_raw;
+  }
+  if (iz == Ubuf.nz - 1u) {
+    // w_+1 = -w_-1
+    w_zp = -w_zm_raw;
+  }
+
   let Lw = (w_xp - 2.0*w_c + w_xm) * Ubuf.inv_dx2 +
            (w_yp - 2.0*w_c + w_ym) * Ubuf.inv_dy2 +
            (w_zp - 2.0*w_c + w_zm) * Ubuf.inv_dz2;

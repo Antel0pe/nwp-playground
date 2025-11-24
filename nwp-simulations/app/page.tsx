@@ -95,7 +95,7 @@ export default function Home() {
       // COMPUTE PIPELINE: theta slice to outTex
       // ------------------------------------------------------------------
       const thetaModule = device.createShaderModule({
-  code: /* wgsl */ `
+        code: /* wgsl */ `
 struct Dims { data: array<u32> }; // [0]=nx, [1]=ny, [2]=nz, [3]=j
 
 struct ViewUniforms {
@@ -119,18 +119,18 @@ fn NY() -> u32 { return dims.data[1]; }
 fn NZ() -> u32 { return dims.data[2]; }
 fn J () -> u32 { return dims.data[3]; }
 
-fn colormap_blue_red(v_in: f32) -> vec3<f32> {
+fn colormap_blue_red(v_in: f32) -> vec4<f32> {
   let v = clamp(v_in, 0.0, 1.0);
-  return vec3<f32>(v, 0.0, 1.0 - v);
+  return vec4<f32>(v, 0.0, 1.0 - v, 1.0);
 }
 
-fn colormap_rh(v_in: f32) -> vec3<f32> {
+fn colormap_rh(v_in: f32) -> vec4<f32> {
   let v = clamp(v_in, 0.0, 1.0);
 
   // start = white
-  let c0 = vec3<f32>(1.0, 1.0, 1.0);
+  let c0 = vec4<f32>(1.0, 1.0, 1.0, 1.0);
   // end   = deep blue
-  let c1 = vec3<f32>(0.0, 0.0, 0.5);
+  let c1 = vec4<f32>(0.0, 0.0, 0.5, 1.0);
 
   // linear interpolation: mix(c0, c1, v)
   return c0 * (1.0 - v) + c1 * v;
@@ -170,7 +170,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 
   let qc_val = qc[idx];
 
-  var rgb : vec3<f32>;
+  var rgb : vec4<f32>;
 
   if (V.mode == 0u) {
     // theta_p view (same scaling as before)
@@ -196,15 +196,27 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
 }
 
 
-  if (V.showClouds == 1u && qc_val > 1e-4) {
-  rgb = vec3<f32>(1.0, 1.0, 0.0);
+if (V.showClouds == 1u && qc_val > 1e-6) {
+    // Normalize qc relative to typical cloud range (0–5 g/kg)
+    let qc_norm = clamp(qc_val / 5e-3, 0.0, 1.0);
+
+    // Cloud brightness (white → grey as qc increases)
+    let brightness = 1.0 - 0.5 * qc_norm;
+
+    // Cloud opacity: thin clouds = faint, thick clouds = solid
+    // Use a soft curve for nice visuals.
+    let alpha = clamp(sqrt(qc_norm), 0.0, 1.0);
+
+    rgb = vec4<f32>(brightness, brightness, brightness, alpha);
 }
 
 
-  textureStore(outImg, vec2<i32>(i32(i), i32(k)), vec4<f32>(rgb, 1.0));
+
+
+  textureStore(outImg, vec2<i32>(i32(i), i32(k)), rgb);
 }
 `,
-});
+      });
 
 
       const thetaPipeline = device.createComputePipeline({
@@ -222,107 +234,107 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
       device.queue.writeBuffer(dimsBuf, 0, dimsU32);
 
       // 0 = theta_p, 1 = RH (rhs_qv)
-const viewUniformData = new Uint32Array([0, 1, 0, 0]);
-const viewUniformBuf = device.createBuffer({
-  size: viewUniformData.byteLength,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+      const viewUniformData = new Uint32Array([0, 1, 0, 0]);
+      const viewUniformBuf = device.createBuffer({
+        size: viewUniformData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
 
 
       const thetaBind = device.createBindGroup({
-  layout: thetaPipeline.getBindGroupLayout(0),
-  entries: [
-    { binding: 0, resource: { buffer: fields.theta_p } },
-    { binding: 1, resource: outView },
-    { binding: 2, resource: { buffer: dimsBuf } },
-    { binding: 3, resource: { buffer: fields.qc } },
-    { binding: 4, resource: { buffer: fields.qv } },        // qv
-    { binding: 5, resource: { buffer: fields.theta0 } },    // or fields.theta0, whichever you use
-    { binding: 6, resource: { buffer: fields.p0 } },        // same
-    { binding: 7, resource: { buffer: viewUniformBuf } },   // ViewUniforms
-  ],
-});
+        layout: thetaPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: fields.theta_p } },
+          { binding: 1, resource: outView },
+          { binding: 2, resource: { buffer: dimsBuf } },
+          { binding: 3, resource: { buffer: fields.qc } },
+          { binding: 4, resource: { buffer: fields.qv } },        // qv
+          { binding: 5, resource: { buffer: fields.theta0 } },    // or fields.theta0, whichever you use
+          { binding: 6, resource: { buffer: fields.p0 } },        // same
+          { binding: 7, resource: { buffer: viewUniformBuf } },   // ViewUniforms
+        ],
+      });
 
 
       // ------------------------------------------------------------------
       // --- PARTICLES: buffers + advect compute pipeline
       // ------------------------------------------------------------------
       const N_PARTICLES = nx * nz;
-const MAX_LIFE_STEPS = 300; // tweak lifetime here
+      const MAX_LIFE_STEPS = 300; // tweak lifetime here
 
-// Particle: [x, z, life, pad] -> 4 * f32
-const particleStride = 4 * 4;
-const particleBuf = device.createBuffer({
-  size: N_PARTICLES * particleStride,
-  usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
+      // Particle: [x, z, life, pad] -> 4 * f32
+      const particleStride = 4 * 4;
+      const particleBuf = device.createBuffer({
+        size: N_PARTICLES * particleStride,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
 
-// console.log(nx, nz)
+      // console.log(nx, nz)
 
-// // initialize particles randomly over the slice
-// {
-//   const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
-//   for (let i = 0; i < N_PARTICLES; i++) {
-//         const gx = i % nx;                 // grid x index 0..nx-1
-//     const gz = Math.floor(i / nx);     // grid z index 0..nz-1
-    
-//     const base = 4 * i;
-//           // arr[base + 0] = Math.random() * (nx - 1); // x index
-//           // arr[base + 1] = Math.random() * (nz - 1); // z index
-//           arr[base + 0] = gx + 0.5; // x index
-//           arr[base + 1] = gz+ 0.5; // z index
-//           console.log(gx, gz)
-//               arr[base + 2] = MAX_LIFE_STEPS;   // life
-//     arr[base + 3] = 0.0;  // pad
-//         }
-//   device.queue.writeBuffer(particleBuf, 0, arr);
-// }
-// initialize particles on a uniform grid over the x–z slice
-// choose a logical grid resolution for particles
-// npx * npz should be >= N_PARTICLES
-const aspect = nx / nz;
-let npx = Math.max(1, Math.round(Math.sqrt(N_PARTICLES * aspect)));
-let npz = Math.max(1, Math.ceil(N_PARTICLES / npx));
+      // // initialize particles randomly over the slice
+      // {
+      //   const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
+      //   for (let i = 0; i < N_PARTICLES; i++) {
+      //         const gx = i % nx;                 // grid x index 0..nx-1
+      //     const gz = Math.floor(i / nx);     // grid z index 0..nz-1
 
-// spacing in index space
-const dxp = nx / npx; // width of one particle cell in x
-const dzp = nz/ npz; // height of one particle cell in z
+      //     const base = 4 * i;
+      //           // arr[base + 0] = Math.random() * (nx - 1); // x index
+      //           // arr[base + 1] = Math.random() * (nz - 1); // z index
+      //           arr[base + 0] = gx + 0.5; // x index
+      //           arr[base + 1] = gz+ 0.5; // z index
+      //           console.log(gx, gz)
+      //               arr[base + 2] = MAX_LIFE_STEPS;   // life
+      //     arr[base + 3] = 0.0;  // pad
+      //         }
+      //   device.queue.writeBuffer(particleBuf, 0, arr);
+      // }
+      // initialize particles on a uniform grid over the x–z slice
+      // choose a logical grid resolution for particles
+      // npx * npz should be >= N_PARTICLES
+      const aspect = nx / nz;
+      let npx = Math.max(1, Math.round(Math.sqrt(N_PARTICLES * aspect)));
+      let npz = Math.max(1, Math.ceil(N_PARTICLES / npx));
 
-{
-  const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
+      // spacing in index space
+      const dxp = nx / npx; // width of one particle cell in x
+      const dzp = nz / npz; // height of one particle cell in z
 
-  for (let i = 0; i < N_PARTICLES; i++) {
-    const gx = i % npx;             // 0 .. npx-1
-    const gz = Math.floor(i / npx); // 0 .. npz-1 (until we run out of particles)
+      {
+        const arr = new Float32Array((N_PARTICLES * particleStride) / 4);
 
-    const base = 4 * i;
+        for (let i = 0; i < N_PARTICLES; i++) {
+          const gx = i % npx;             // 0 .. npx-1
+          const gz = Math.floor(i / npx); // 0 .. npz-1 (until we run out of particles)
 
-    // put the particle at the center of its logical cell,
-    // mapped to [0, nx) x [0, nz)
-    arr[base + 0] = (gx + 0.5) * dxp; // x in [0, nx)
-    arr[base + 1] = (gz + 0.5) * dzp; // z in [0, nz)
-    arr[base + 2] = MAX_LIFE_STEPS;   // life
-    arr[base + 3] = 0.0;              // pad
-  }
+          const base = 4 * i;
 
-  device.queue.writeBuffer(particleBuf, 0, arr);
-}
+          // put the particle at the center of its logical cell,
+          // mapped to [0, nx) x [0, nz)
+          arr[base + 0] = (gx + 0.5) * dxp; // x in [0, nx)
+          arr[base + 1] = (gz + 0.5) * dzp; // z in [0, nz)
+          arr[base + 2] = MAX_LIFE_STEPS;   // life
+          arr[base + 3] = 0.0;              // pad
+        }
 
-
-
-// uniforms: N (as u32) + padding to 16 bytes
-// PartUniforms: [N, frame, maxLifeSteps, pad]
-const partUniformData = new Uint32Array([N_PARTICLES, 0, MAX_LIFE_STEPS, 0]);
-const partUniformBuf = device.createBuffer({
-  size: partUniformData.byteLength,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
+        device.queue.writeBuffer(particleBuf, 0, arr);
+      }
 
 
 
-          const advectModule = device.createShaderModule({
+      // uniforms: N (as u32) + padding to 16 bytes
+      // PartUniforms: [N, frame, maxLifeSteps, pad]
+      const partUniformData = new Uint32Array([N_PARTICLES, 0, MAX_LIFE_STEPS, 0]);
+      const partUniformBuf = device.createBuffer({
+        size: partUniformData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
+
+
+
+      const advectModule = device.createShaderModule({
         code: /* wgsl */ `
 struct Dims { data: array<u32> };
 
@@ -441,56 +453,56 @@ if (p.life <= 0.0) {
 
 
       const advectBGL = device.createBindGroupLayout({
-  entries: [
-    {
-      binding: 0,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "storage" },
-    },
-    {
-      binding: 1,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "read-only-storage" },
-    },
-    {
-      binding: 2,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "read-only-storage" },
-    },
-    {
-      binding: 3,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "read-only-storage" },
-    },
-    {
-      binding: 4,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "read-only-storage" },
-    },
-    {
-      binding: 5,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type: "uniform" },
-    },
-  ],
-});
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 4,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" },
+          },
+          {
+            binding: 5,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+        ],
+      });
 
-const advectPipeline = device.createComputePipeline({
-  layout: device.createPipelineLayout({ bindGroupLayouts: [advectBGL] }),
-  compute: { module: advectModule, entryPoint: "main" },
-});
+      const advectPipeline = device.createComputePipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [advectBGL] }),
+        compute: { module: advectModule, entryPoint: "main" },
+      });
 
-const advectBind = device.createBindGroup({
-  layout: advectBGL,
-  entries: [
-    { binding: 0, resource: { buffer: particleBuf } },
-    { binding: 1, resource: { buffer: fields.u } },
-    { binding: 2, resource: { buffer: fields.v } },
-    { binding: 3, resource: { buffer: fields.w } },
-    { binding: 4, resource: { buffer: dimsBuf } },
-    { binding: 5, resource: { buffer: partUniformBuf } },
-  ],
-});
+      const advectBind = device.createBindGroup({
+        layout: advectBGL,
+        entries: [
+          { binding: 0, resource: { buffer: particleBuf } },
+          { binding: 1, resource: { buffer: fields.u } },
+          { binding: 2, resource: { buffer: fields.v } },
+          { binding: 3, resource: { buffer: fields.w } },
+          { binding: 4, resource: { buffer: dimsBuf } },
+          { binding: 5, resource: { buffer: partUniformBuf } },
+        ],
+      });
 
 
       // ------------------------------------------------------------------
@@ -499,43 +511,43 @@ const advectBind = device.createBindGroup({
       if (paneRef.current) {
         const pane = new Pane({ container: paneRef.current });
         const controls = {
-  jSlice: initialJSlice,
-  viewField: "theta" as "theta" | "rh",
-  showClouds: true,
-};
+          jSlice: initialJSlice,
+          viewField: "theta" as "theta" | "rh",
+          showClouds: true,
+        };
 
 
-pane
-  .addBinding(controls, "jSlice", {
-    min: 0,
-    max: ny - 1,
-    step: 1,
-    label: "Y slice (j)",
-  })
-  .on("change", (ev: { value: number }) => {
-    const j = ev.value | 0;
-    dimsU32[3] = j;
-    device.queue.writeBuffer(dimsBuf, 0, dimsU32);
-  });
+        pane
+          .addBinding(controls, "jSlice", {
+            min: 0,
+            max: ny - 1,
+            step: 1,
+            label: "Y slice (j)",
+          })
+          .on("change", (ev: { value: number }) => {
+            const j = ev.value | 0;
+            dimsU32[3] = j;
+            device.queue.writeBuffer(dimsBuf, 0, dimsU32);
+          });
 
-pane
-  .addBinding(controls, "viewField", {
-    label: "Field",
-    options: {
-      "Theta (θ')": "theta",
-      "RH (qv/qs)": "rh",
-    },
-  })
-  .on("change", (ev: { value: "theta" | "rh" }) => {
-    viewUniformData[0] = ev.value === "rh" ? 1 : 0;
-    device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
-  });
+        pane
+          .addBinding(controls, "viewField", {
+            label: "Field",
+            options: {
+              "Theta (θ')": "theta",
+              "RH (qv/qs)": "rh",
+            },
+          })
+          .on("change", (ev: { value: "theta" | "rh" }) => {
+            viewUniformData[0] = ev.value === "rh" ? 1 : 0;
+            device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+          });
 
-  pane.addBinding(controls, "showClouds", { label: "Show Clouds" })
-  .on("change", (ev: { value: boolean }) => {
-    viewUniformData[1] = ev.value ? 1 : 0;
-    device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
-  });
+        pane.addBinding(controls, "showClouds", { label: "Show Clouds" })
+          .on("change", (ev: { value: boolean }) => {
+            viewUniformData[1] = ev.value ? 1 : 0;
+            device.queue.writeBuffer(viewUniformBuf, 0, viewUniformData);
+          });
 
 
       }
@@ -597,7 +609,7 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
       // --- PARTICLES: render pipeline
       // ------------------------------------------------------------------
       const particleRenderModule = device.createShaderModule({
-  code: /* wgsl */ `
+        code: /* wgsl */ `
 struct Dims { data: array<u32> };
 
 struct Particle {
@@ -691,14 +703,14 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(c, c, c, 1.0);
 }
 `,
-});
+      });
 
 
       const particleRenderPipeline = device.createRenderPipeline({
         layout: "auto",
         vertex: { module: particleRenderModule, entryPoint: "vs_main" },
         fragment: { module: particleRenderModule, entryPoint: "fs_main", targets: [{ format }] },
-primitive: { topology: "triangle-list" },
+        primitive: { topology: "triangle-list" },
 
       });
 
@@ -732,8 +744,8 @@ primitive: { topology: "triangle-list" },
         device.pushErrorScope("validation");
 
         frameIndex++;
-partUniformData[1] = frameIndex; // update frame
-device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
+        partUniformData[1] = frameIndex; // update frame
+        device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
 
 
         const encoder = device.createCommandEncoder();
@@ -781,9 +793,9 @@ device.queue.writeBuffer(partUniformBuf, 0, partUniformData);
           rpass.draw(3);
 
           // --- PARTICLES: draw on top ---
-rpass.setPipeline(particleRenderPipeline);
-rpass.setBindGroup(0, particleRenderBind);
-rpass.draw(6, N_PARTICLES, 0, 0); // 6 verts per particle, N_PARTICLES instances
+          rpass.setPipeline(particleRenderPipeline);
+          rpass.setBindGroup(0, particleRenderBind);
+          rpass.draw(6, N_PARTICLES, 0, 0); // 6 verts per particle, N_PARTICLES instances
 
           rpass.end();
         }
@@ -807,7 +819,7 @@ rpass.draw(6, N_PARTICLES, 0, 0); // 6 verts per particle, N_PARTICLES instances
       <div className="flex h-[600px]">
         {/* canvas + overlay */}
         <div className="relative">
-          <h1 className="absolute top-2 left-2 text-white z-10">
+          <h1 className="absolute top-2 left-2 text-black z-10">
             Time: {accumulatedTime.toFixed(0)}s
           </h1>
           <canvas

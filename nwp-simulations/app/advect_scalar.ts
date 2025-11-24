@@ -61,8 +61,10 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ixm = wrap_dec(ix, U.nx);
   let iyp = wrap_inc(iy, U.ny);
   let iym = wrap_dec(iy, U.ny);
-  let izp = wrap_inc(iz, U.nz);
-  let izm = wrap_dec(iz, U.nz);
+  // let izp = wrap_inc(iz, U.nz);
+  // let izm = wrap_dec(iz, U.nz);
+    let izp = min(iz + 1u, U.nz - 1u);
+  let izm = max(iz - 1u, 0u);
 
   let i     = idx;
   let i_xp  = iz * sz + iy * sy + ixp * sx;
@@ -77,16 +79,31 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let phi_xm = phi[i_xm];
   let phi_yp = phi[i_yp];
   let phi_ym = phi[i_ym];
-  let phi_zp = phi[i_zp];
-  let phi_zm = phi[i_zm];
+  var phi_zp = phi[i_zp];
+  var phi_zm = phi[i_zm];
 
-    let rho_c  = rho0[i];
+  // Neumann for scalars: outside value equals boundary cell
+if (iz == 0u) {
+  phi_zm = phi_c;
+}
+if (iz == U.nz - 1u) {
+  phi_zp = phi_c;
+}
+
+  let rho_c  = rho0[i];
   let rho_xp = rho0[i_xp];
   let rho_xm = rho0[i_xm];
   let rho_yp = rho0[i_yp];
   let rho_ym = rho0[i_ym];
-  let rho_zp = rho0[i_zp];
-  let rho_zm = rho0[i_zm];
+  var rho_zp = rho0[i_zp];
+  var rho_zm = rho0[i_zm];
+
+  if (iz == 0u) {
+  rho_zm = rho_c;
+}
+if (iz == U.nz - 1u) {
+  rho_zp = rho_c;
+}
 
   // face-centered rho0 (simple average like velocity faces)
   let rho_x_p = 0.5 * (rho_c  + rho_xp);
@@ -101,8 +118,15 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ux_m = 0.5 * (u[i_xm] + u[i]);
   let vy_p = 0.5 * (v[i]    + v[i_yp]);
   let vy_m = 0.5 * (v[i_ym] + v[i]);
-  let wz_p = 0.5 * (w[i]    + w[i_zp]);
-  let wz_m = 0.5 * (w[i_zm] + w[i]);
+  var wz_p = 0.5 * (w[i]    + w[i_zp]);
+  var wz_m = 0.5 * (w[i_zm] + w[i]);
+
+  if (iz < U.nz - 1u) {
+  wz_p = 0.5 * (w[i] + w[i_zp]);
+}
+if (iz > 0u) {
+  wz_m = 0.5 * (w[i_zm] + w[i]);
+}
 
   // upwind picks
   let phi_x_up_p = select(phi_xp, phi_c,  ux_p > 0.0);
@@ -117,8 +141,12 @@ fn advect_scalar(@builtin(global_invocation_id) gid: vec3<u32>) {
   let Fx_m = rho_x_m * ux_m * phi_x_up_m;
   let Fy_p = rho_y_p * vy_p * phi_y_up_p;
   let Fy_m = rho_y_m * vy_m * phi_y_up_m;
-  let Fz_p = rho_z_p * wz_p * phi_z_up_p;
-  let Fz_m = rho_z_m * wz_m * phi_z_up_m;
+  var Fz_p = rho_z_p * wz_p * phi_z_up_p;
+  var Fz_m = rho_z_m * wz_m * phi_z_up_m;
+
+  if (iz == 0u)     { Fz_m = 0.0; }
+if (iz == U.nz-1u)  { Fz_p = 0.0; }
+
 
   // divergence
   let dFx = (Fx_p - Fx_m) * U.inv_dx;

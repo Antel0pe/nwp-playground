@@ -47,6 +47,7 @@ type Fd4Pipelines = {
   projectSubtract: GPUComputePipeline;
   mulCoeff: GPUComputePipeline;
   mulCoeffInplace: GPUComputePipeline;
+  clampW: GPUComputePipeline;
 };
 
 export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
@@ -269,7 +270,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
-const MUL_COEFF_INPLACE_WGSL = /* wgsl */`
+  const MUL_COEFF_INPLACE_WGSL = /* wgsl */`
 struct MulU {
   N: u32,
   _pad0: u32,
@@ -322,10 +323,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let iym2 = wrap_dec(iym1,ny);
 
   let nz = FD4.nz;
-  let izp1 = wrap_inc(iz,nz);
-  let izp2 = wrap_inc(izp1,nz);
-  let izm1 = wrap_dec(iz,nz);
-  let izm2 = wrap_dec(izm1,nz);
+  // let izp1 = wrap_inc(iz,nz);
+  // let izp2 = wrap_inc(izp1,nz);
+  // let izm1 = wrap_dec(iz,nz);
+  // let izm2 = wrap_dec(izm1,nz);
+  let izp1 = min(iz + 1u, nz - 1u);
+  let izp2 = min(iz + 2u, nz - 1u);
+  let izm1 = max(iz - 1u, 0u);
+  let izm2 = max(iz - 2u, 0u);
 
   let i_xp1 = idx3(ixp1,iy,iz);
   let i_xp2 = idx3(ixp2,iy,iz);
@@ -342,9 +347,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i_zm1 = idx3(ix,iy,izm1);
   let i_zm2 = idx3(ix,iy,izm2);
 
+  let invdz12 = FD4.invdz12;             // = 1/(12 dz)
+  let invdz2  = 6.0 * invdz12;        // or precompute from FD4.invdz12
+
   let du_dx = (-u[i_xp2] + 8.0*u[i_xp1] - 8.0*u[i_xm1] + u[i_xm2]) * FD4.invdx12;
   let dv_dy = (-v[i_yp2] + 8.0*v[i_yp1] - 8.0*v[i_ym1] + v[i_ym2]) * FD4.invdy12;
-  let dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * FD4.invdz12;
+  var dw_dz: f32;
+  // let dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * FD4.invdz12;
+  
+  // if (iz <= 1u) {
+  //   // forward 2nd order: (-3 f0 + 4 f1 - f2) / (2 dz)
+  //   dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - 1.0*w[i_zp2]) * invdz2;
+  // } else if (iz >= nz - 2u) {
+  //   // backward 2nd order: (3 f0 - 4 f-1 + f-2) / (2 dz)
+  //   dw_dz = ( 3.0*w[id] - 4.0*w[i_zm1] + 1.0*w[i_zm2]) * invdz2;
+  // } else {
+  //   // interior 4th order
+  //   dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
+  // }
+
+if (iz == 0u) {
+  // forward 2nd order at wall
+  dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
+} else if (iz == 1u) {
+  // still forward 2nd order (uses iz, iz+1, iz+2)
+  dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
+} else if (iz == nz-2u) {
+  // backward 2nd order
+  dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
+} else if (iz == nz-1u) {
+  dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
+} else {
+  // interior 4th order
+  dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
+}
+
+
+  // if (iz == 0u || iz == nz - 1u) {
+  //   dw_dz = 0.0;  // Neumann BC for psi at rigid lid/floor
+  // }
 
   outDiv[id] = du_dx + dv_dy + dw_dz;
 }
@@ -381,10 +422,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let iym2 = wrap_dec(iym1,ny);
 
   let nz = FD4.nz;
-  let izp1 = wrap_inc(iz,nz);
-  let izp2 = wrap_inc(izp1,nz);
-  let izm1 = wrap_dec(iz,nz);
-  let izm2 = wrap_dec(izm1,nz);
+  // let izp1 = wrap_inc(iz,nz);
+  // let izp2 = wrap_inc(izp1,nz);
+  // let izm1 = wrap_dec(iz,nz);
+  // let izm2 = wrap_dec(izm1,nz);
+  let izp1 = min(iz + 1u, nz - 1u); 
+  let izp2 = min(iz + 2u, nz - 1u);
+  let izm1 = max(iz - 1u, 0u);
+  let izm2 = max(iz - 2u, 0u);
 
   let i_xp1 = idx3(ixp1,iy,iz);
   let i_xp2 = idx3(ixp2,iy,iz);
@@ -403,13 +448,167 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let dpsi_dx = (-psi[i_xp2] + 8.0*psi[i_xp1] - 8.0*psi[i_xm1] + psi[i_xm2]) * FD4.invdx12;
   let dpsi_dy = (-psi[i_yp2] + 8.0*psi[i_yp1] - 8.0*psi[i_ym1] + psi[i_ym2]) * FD4.invdy12;
-  let dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * FD4.invdz12;
+  var dpsi_dz: f32;
+  // let dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * FD4.invdz12;
+  
+  let invdz12 = FD4.invdz12;             // = 1/(12 dz)
+  let invdz2  = 6.0 * invdz12;         // or precompute from FD4.invdz12
+
+  // if (iz <= 1u) {
+  //   // forward 2nd order: (-3 f0 + 4 f1 - f2) / (2 dz)
+  //   dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - 1.0*psi[i_zp2]) * invdz2;
+  // } else if (iz >= nz - 2u) {
+  //   // backward 2nd order: (3 f0 - 4 f-1 + f-2) / (2 dz)
+  //   dpsi_dz = ( 3.0*psi[id] - 4.0*psi[i_zm1] + 1.0*psi[i_zm2]) * invdz2;
+  // } else {
+  //   // interior 4th order
+  //   dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
+  // }
+
+if (iz == 0u) {
+  // forward 2nd order at wall
+  dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
+} else if (iz == 1u) {
+  // still forward 2nd order (uses iz, iz+1, iz+2)
+  dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
+} else if (iz == nz-2u) {
+  // backward 2nd order
+  dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
+} else if (iz == nz-1u) {
+  dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
+} else {
+  // interior 4th order
+  dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
+}
+
+  // if (iz == 0u || iz == nz - 1u) {
+  //   dpsi_dz = 0.0;  // Neumann BC for psi at rigid lid/floor
+  // }
 
   gx[id] = dpsi_dx;
   gy[id] = dpsi_dy;
   gz[id] = dpsi_dz;
 }
 `;
+ // ---------- div4 ----------
+//   const DIV4_WGSL = /* wgsl */`
+// ${FD4_COMMON}
+
+// @group(0) @binding(0) var<storage, read>       u : array<f32>;
+// @group(0) @binding(1) var<storage, read>       v : array<f32>;
+// @group(0) @binding(2) var<storage, read>       w : array<f32>;
+// @group(0) @binding(3) var<storage, read_write> outDiv : array<f32>;
+
+// @compute @workgroup_size(${WG})
+// fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+//   let id = gid.x;
+//   if (id >= FD4.N) { return; }
+
+//   let nx = FD4.nx;
+//   let ny = FD4.ny;
+//   let ix = id % nx;
+//   let iy = (id / nx) % ny;
+//   let iz = id / (nx * ny);
+
+//   let ixp1 = wrap_inc(ix,nx);
+//   let ixp2 = wrap_inc(ixp1,nx);
+//   let ixm1 = wrap_dec(ix,nx);
+//   let ixm2 = wrap_dec(ixm1,nx);
+
+//   let iyp1 = wrap_inc(iy,ny);
+//   let iyp2 = wrap_inc(iyp1,ny);
+//   let iym1 = wrap_dec(iy,ny);
+//   let iym2 = wrap_dec(iym1,ny);
+
+//   let nz = FD4.nz;
+//   let izp1 = wrap_inc(iz,nz);
+//   let izp2 = wrap_inc(izp1,nz);
+//   let izm1 = wrap_dec(iz,nz);
+//   let izm2 = wrap_dec(izm1,nz);
+
+//   let i_xp1 = idx3(ixp1,iy,iz);
+//   let i_xp2 = idx3(ixp2,iy,iz);
+//   let i_xm1 = idx3(ixm1,iy,iz);
+//   let i_xm2 = idx3(ixm2,iy,iz);
+
+//   let i_yp1 = idx3(ix,iyp1,iz);
+//   let i_yp2 = idx3(ix,iyp2,iz);
+//   let i_ym1 = idx3(ix,iym1,iz);
+//   let i_ym2 = idx3(ix,iym2,iz);
+
+//   let i_zp1 = idx3(ix,iy,izp1);
+//   let i_zp2 = idx3(ix,iy,izp2);
+//   let i_zm1 = idx3(ix,iy,izm1);
+//   let i_zm2 = idx3(ix,iy,izm2);
+
+//   let du_dx = (-u[i_xp2] + 8.0*u[i_xp1] - 8.0*u[i_xm1] + u[i_xm2]) * FD4.invdx12;
+//   let dv_dy = (-v[i_yp2] + 8.0*v[i_yp1] - 8.0*v[i_ym1] + v[i_ym2]) * FD4.invdy12;
+//   let dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * FD4.invdz12;
+
+//   outDiv[id] = du_dx + dv_dy + dw_dz;
+// }
+// `;
+
+//   // ---------- grad4 ----------
+//   const GRAD4_WGSL = /* wgsl */`
+// ${FD4_COMMON}
+
+// @group(0) @binding(0) var<storage, read>       psi : array<f32>;
+// @group(0) @binding(1) var<storage, read_write> gx  : array<f32>;
+// @group(0) @binding(2) var<storage, read_write> gy  : array<f32>;
+// @group(0) @binding(3) var<storage, read_write> gz  : array<f32>;
+
+// @compute @workgroup_size(${WG})
+// fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+//   let id = gid.x;
+//   if (id >= FD4.N) { return; }
+
+//   let nx = FD4.nx;
+//   let ny = FD4.ny;
+//   let ix = id % nx;
+//   let iy = (id / nx) % ny;
+//   let iz = id / (nx * ny);
+
+//   let ixp1 = wrap_inc(ix,nx);
+//   let ixp2 = wrap_inc(ixp1,nx);
+//   let ixm1 = wrap_dec(ix,nx);
+//   let ixm2 = wrap_dec(ixm1,nx);
+
+//   let iyp1 = wrap_inc(iy,ny);
+//   let iyp2 = wrap_inc(iyp1,ny);
+//   let iym1 = wrap_dec(iy,ny);
+//   let iym2 = wrap_dec(iym1,ny);
+
+//   let nz = FD4.nz;
+//   let izp1 = wrap_inc(iz,nz);
+//   let izp2 = wrap_inc(izp1,nz);
+//   let izm1 = wrap_dec(iz,nz);
+//   let izm2 = wrap_dec(izm1,nz);
+
+//   let i_xp1 = idx3(ixp1,iy,iz);
+//   let i_xp2 = idx3(ixp2,iy,iz);
+//   let i_xm1 = idx3(ixm1,iy,iz);
+//   let i_xm2 = idx3(ixm2,iy,iz);
+
+//   let i_yp1 = idx3(ix,iyp1,iz);
+//   let i_yp2 = idx3(ix,iyp2,iz);
+//   let i_ym1 = idx3(ix,iym1,iz);
+//   let i_ym2 = idx3(ix,iym2,iz);
+
+//   let i_zp1 = idx3(ix,iy,izp1);
+//   let i_zp2 = idx3(ix,iy,izp2);
+//   let i_zm1 = idx3(ix,iy,izm1);
+//   let i_zm2 = idx3(ix,iy,izm2);
+
+//   let dpsi_dx = (-psi[i_xp2] + 8.0*psi[i_xp1] - 8.0*psi[i_xm1] + psi[i_xm2]) * FD4.invdx12;
+//   let dpsi_dy = (-psi[i_yp2] + 8.0*psi[i_yp1] - 8.0*psi[i_ym1] + psi[i_ym2]) * FD4.invdy12;
+//   let dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * FD4.invdz12;
+
+//   gx[id] = dpsi_dx;
+//   gy[id] = dpsi_dy;
+//   gz[id] = dpsi_dz;
+// }
+// `;
 
   // ---------- dot (stage 1) ----------
   const DOT_WGSL = /* wgsl */`
@@ -691,6 +890,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+const CLAMP_W_WGSL = /* wgsl */`
+struct FD4U {
+  nx: u32,
+  ny: u32,
+  nz: u32,
+  N:  u32,
+  sx: u32,
+  sy: u32,
+  sz: u32,
+  _pad: u32,
+  invdx12: f32,
+  invdy12: f32,
+  invdz12: f32,
+  _padf: f32,
+};
+
+@group(0) @binding(0) var<storage, read_write> w  : array<f32>;
+@group(0) @binding(1) var<uniform> FD4 : FD4U;
+
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= FD4.N) { return; }
+
+  let nx = FD4.nx;
+  let ny = FD4.ny;
+  let nz = FD4.nz;
+
+  let iz = i / (nx * ny);
+
+  if (iz == 0u || iz == nz - 1u) {
+    w[i] = 0.0;
+  }
+}
+`;
+
   const pipelines: Fd4Pipelines = {
     div4: device.createComputePipeline({
       layout: "auto",
@@ -758,10 +993,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       label: "fd4_mulCoeff",
     }),
     mulCoeffInplace: device.createComputePipeline({
-  layout: "auto",
-  compute: { module: device.createShaderModule({ code: MUL_COEFF_INPLACE_WGSL }), entryPoint: "main" },
-  label: "fd4_mulCoeffInplace",
-}),
+      layout: "auto",
+      compute: { module: device.createShaderModule({ code: MUL_COEFF_INPLACE_WGSL }), entryPoint: "main" },
+      label: "fd4_mulCoeffInplace",
+    }),
+    clampW: device.createComputePipeline({
+      layout: "auto",
+      compute: { module: device.createShaderModule({ code: CLAMP_W_WGSL }), entryPoint: "main" },
+      label: "fd4_clampW",
+    }),
 
   };
 
@@ -905,23 +1145,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     pass.dispatchWorkgroups(wgCount);
   }
 
-function passMulCoeffInplace(
-  pass: GPUComputePassEncoder,
-  coeff: GPUBuffer,
-  buf: GPUBuffer
-) {
-  const bg = device.createBindGroup({
-    layout: pipelines.mulCoeffInplace.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: coeff } },
-      { binding: 1, resource: { buffer: buf } },
-      { binding: 2, resource: { buffer: uniforms.copyU } }, // N-only uniform
-    ],
-  });
-  pass.setPipeline(pipelines.mulCoeffInplace);
-  pass.setBindGroup(0, bg);
-  pass.dispatchWorkgroups(wgCount);
-}
+  function passMulCoeffInplace(
+    pass: GPUComputePassEncoder,
+    coeff: GPUBuffer,
+    buf: GPUBuffer
+  ) {
+    const bg = device.createBindGroup({
+      layout: pipelines.mulCoeffInplace.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: coeff } },
+        { binding: 1, resource: { buffer: buf } },
+        { binding: 2, resource: { buffer: uniforms.copyU } }, // N-only uniform
+      ],
+    });
+    pass.setPipeline(pipelines.mulCoeffInplace);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(wgCount);
+  }
 
   function passUpdatePsiR(pass: GPUComputePassEncoder) {
     const bg = device.createBindGroup({
@@ -988,14 +1228,27 @@ function passMulCoeffInplace(
     pass.dispatchWorkgroups(wgCount);
   }
 
-function applyL4(pass: GPUComputePassEncoder, inv_rho0: GPUBuffer) {
+  function passClampW(pass: GPUComputePassEncoder, w: GPUBuffer) {
+    const bg = device.createBindGroup({
+      layout: pipelines.clampW.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: w } },
+        { binding: 1, resource: { buffer: uniforms.fd4 } },
+      ],
+    });
+    pass.setPipeline(pipelines.clampW);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(wgCount);
+  }
+
+  function applyL4(pass: GPUComputePassEncoder, inv_rho0: GPUBuffer) {
     // gx,gy,gz = grad4(p)
     passGrad4(pass, buffers.p, buffers.gx, buffers.gy, buffers.gz);
 
     // scale by inv_rho0: gx,gy,gz <- inv_rho0 * g*
-passMulCoeffInplace(pass, inv_rho0, buffers.gx);
-passMulCoeffInplace(pass, inv_rho0, buffers.gy);
-passMulCoeffInplace(pass, inv_rho0, buffers.gz);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gx);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gy);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gz);
 
 
     // Ap = div4(inv_rho0*grad4(p))
@@ -1004,13 +1257,14 @@ passMulCoeffInplace(pass, inv_rho0, buffers.gz);
 
 
   // ---------- public synchronous project ----------
-function project(
-  pass: GPUComputePassEncoder,
-  u: GPUBuffer, v: GPUBuffer, w: GPUBuffer,
-  rho0: GPUBuffer, inv_rho0: GPUBuffer,
-  maxIter = 40
-) {
-    const encoder = device.createCommandEncoder();
+  function project(
+    pass: GPUComputePassEncoder,
+    u: GPUBuffer, v: GPUBuffer, w: GPUBuffer,
+    rho0: GPUBuffer, inv_rho0: GPUBuffer,
+    maxIter = 40
+  ) {
+    // TEMP REMOVE
+    // passClampW(pass, w);
 
     // 1) bDiv = div4(rho0*u*, rho0*v*, rho0*w*)
     // reuse gx/gy/gz as scratch for scaled velocities
@@ -1066,16 +1320,16 @@ function project(
     passGrad4(pass, buffers.psi, buffers.gx, buffers.gy, buffers.gz);
 
     // scale: g <- inv_rho0 * g
-passMulCoeffInplace(pass, inv_rho0, buffers.gx);
-passMulCoeffInplace(pass, inv_rho0, buffers.gy);
-passMulCoeffInplace(pass, inv_rho0, buffers.gz);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gx);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gy);
+    passMulCoeffInplace(pass, inv_rho0, buffers.gz);
 
 
     // subtract scaled gradient from velocity
     passProjectSubtract(pass, u, v, w);
 
-
-    device.queue.submit([encoder.finish()]);
+    // clamp w at top and bottom layer to enforce lid
+    passClampW(pass, w);
   }
 
   return {
