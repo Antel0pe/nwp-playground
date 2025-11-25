@@ -5,6 +5,7 @@ import { Pane } from "tweakpane";
 import { initBoussinesq3D } from "./init_boussinesq";
 import { makeStepRK2 } from "./step_rk2";
 import { makeComputeRhs } from "./compute_rhs";
+import { makeProjectionFD4 } from "./projection/project_velocity_fd4";
 
 // Assume fields.w is your GPUBuffer
 async function debugPrintBufferMax(device: GPUDevice, buffer: GPUBuffer) {
@@ -90,6 +91,7 @@ export default function Home() {
       });
 
       const dt = 0.5;
+      // const dt = 0.001;
 
       // ------------------------------------------------------------------
       // COMPUTE PIPELINE: theta slice to outTex
@@ -390,7 +392,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let uvel = u[idx];
   let wvel = w[idx];
 
-  let dt = 0.5;
+  let dt = ${dt};
 
   // simple forward Euler advection in slice space
 let dxp = uvel * dt;
@@ -724,6 +726,27 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
         ],
       });
 
+      async function readCGDebug(projection4: ReturnType<typeof makeProjectionFD4>) {
+   const { readbackPAp, readbackRsold, readbackRsnew } = projection4.debugReadbacks;
+
+  await device.queue.onSubmittedWorkDone();
+
+  await readbackPAp.mapAsync(GPUMapMode.READ);
+  const pAp = new Float32Array(readbackPAp.getMappedRange())[0];
+  readbackPAp.unmap();
+
+  await readbackRsold.mapAsync(GPUMapMode.READ);
+  const rsold = new Float32Array(readbackRsold.getMappedRange())[0];
+  readbackRsold.unmap();
+
+  await readbackRsnew.mapAsync(GPUMapMode.READ);
+  const rsnew = new Float32Array(readbackRsnew.getMappedRange())[0];
+  readbackRsnew.unmap();
+
+  console.log("CG debug:", { pAp, rsold, rsnew });
+}
+let debugInFlight = false;
+
       // --- animation flags/time ---
       let running = true;
       let last = performance.now();
@@ -801,6 +824,14 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
         }
 
         device.queue.submit([encoder.finish()]);
+        if ((frameIndex-1) % 30 === 0 && !debugInFlight) {
+    debugInFlight = true;
+    try {
+      await readCGDebug(rk2.projection4);
+    } finally {
+      debugInFlight = false;
+    }
+  }
 
         const err = await device.popErrorScope();
         if (err) console.error("WebGPU validation error (frame):", err.message);

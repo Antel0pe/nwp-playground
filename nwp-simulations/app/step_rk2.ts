@@ -48,7 +48,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 
 
-type RK2Ctx = { step: (encoder: GPUCommandEncoder, dt: number) => void; };
+type RK2Ctx = { 
+    step: (encoder: GPUCommandEncoder, dt: number) => void; 
+     projection4: ReturnType<typeof makeProjectionFD4>;
+};
 
 export function makeStepRK2(opts: {
     device: GPUDevice,
@@ -515,6 +518,21 @@ export function makeStepRK2(opts: {
             
             pass.end(); // <<< close pass before changing alpha
         }
+        encoder.copyBufferToBuffer(
+  projection4.resources.buffers.pAp, 0,
+  projection4.debugReadbacks.readbackPAp, 0,
+  4
+);
+encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsold, 0,
+  projection4.debugReadbacks.readbackRsold, 0,
+  4
+);
+encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsnew, 0,
+  projection4.debugReadbacks.readbackRsnew, 0,
+  4
+);
         
         // --- 2) set alpha = 1.0 BETWEEN passes
         writeAlpha(1.0);
@@ -572,6 +590,21 @@ export function makeStepRK2(opts: {
             
             pass.end();
         }
+        encoder.copyBufferToBuffer(
+  projection4.resources.buffers.pAp, 0,
+  projection4.debugReadbacks.readbackPAp, 0,
+  4
+);
+encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsold, 0,
+  projection4.debugReadbacks.readbackRsold, 0,
+  4
+);
+encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsnew, 0,
+  projection4.debugReadbacks.readbackRsnew, 0,
+  4
+);
 
         // copy finals back to s0
         encoder.copyBufferToBuffer(u_new, 0, fields.u, 0, bytes);
@@ -580,10 +613,11 @@ export function makeStepRK2(opts: {
         encoder.copyBufferToBuffer(theta_p_new, 0, fields.theta_p, 0, bytes);
         encoder.copyBufferToBuffer(qv_new, 0, fields.qv, 0, bytes);
         encoder.copyBufferToBuffer(qc_new, 0, fields.qc, 0, bytes);
+        
 
     }
 
 
 
-    return { step };
+    return { step, projection4 };
 }

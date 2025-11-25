@@ -48,6 +48,7 @@ type Fd4Pipelines = {
   mulCoeff: GPUComputePipeline;
   mulCoeffInplace: GPUComputePipeline;
   clampW: GPUComputePipeline;
+  grad4_bc: GPUComputePipeline;
 };
 
 export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
@@ -129,21 +130,34 @@ export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
 
     rsold: device.createBuffer({
       size: 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
     rsnew: device.createBuffer({
       size: 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
     pAp: device.createBuffer({
       size: 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
     sumDiv: device.createBuffer({
       size: 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
   };
+  const readbackPAp = device.createBuffer({
+  size: 4,
+  usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+});
+const readbackRsold = device.createBuffer({
+  size: 4,
+  usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+});
+const readbackRsnew = device.createBuffer({
+  size: 4,
+  usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+});
+
 
   // ---------- small uniforms ----------
   function makeScalarUniform(size = 16) {
@@ -327,10 +341,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // let izp2 = wrap_inc(izp1,nz);
   // let izm1 = wrap_dec(iz,nz);
   // let izm2 = wrap_dec(izm1,nz);
-  let izp1 = min(iz + 1u, nz - 1u);
-  let izp2 = min(iz + 2u, nz - 1u);
-  let izm1 = max(iz - 1u, 0u);
-  let izm2 = max(iz - 2u, 0u);
+  // let izp1 = min(iz + 1u, nz - 1u);
+  // let izp2 = min(iz + 2u, nz - 1u);
+  // let izm1 = max(iz - 1u, 0u);
+  // let izm2 = max(iz - 2u, 0u);
+  let izp1 = iz + 1u;
+let izp2 = iz + 2u;
+let izm1 = iz - 1u;
+let izm2 = iz - 2u;
+
 
   let i_xp1 = idx3(ixp1,iy,iz);
   let i_xp2 = idx3(ixp2,iy,iz);
@@ -426,10 +445,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // let izp2 = wrap_inc(izp1,nz);
   // let izm1 = wrap_dec(iz,nz);
   // let izm2 = wrap_dec(izm1,nz);
-  let izp1 = min(iz + 1u, nz - 1u); 
-  let izp2 = min(iz + 2u, nz - 1u);
-  let izm1 = max(iz - 1u, 0u);
-  let izm2 = max(iz - 2u, 0u);
+  // let izp1 = min(iz + 1u, nz - 1u); 
+  // let izp2 = min(iz + 2u, nz - 1u);
+  // let izm1 = max(iz - 1u, 0u);
+  // let izm2 = max(iz - 2u, 0u);
+  let izp1 = iz + 1u;
+let izp2 = iz + 2u;
+let izm1 = iz - 1u;
+let izm2 = iz - 2u;
+
 
   let i_xp1 = idx3(ixp1,iy,iz);
   let i_xp2 = idx3(ixp2,iy,iz);
@@ -465,21 +489,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   //   dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
   // }
 
-if (iz == 0u) {
-  // forward 2nd order at wall
-  dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
-} else if (iz == 1u) {
-  // still forward 2nd order (uses iz, iz+1, iz+2)
-  dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
-} else if (iz == nz-2u) {
-  // backward 2nd order
-  dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
-} else if (iz == nz-1u) {
-  dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
-} else {
-  // interior 4th order
-  dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
-}
+  // z-derivative for CG operator: homogeneous Neumann at lids
+  if (iz == 0u || iz == nz-1u) {
+    // enforce ∂p/∂z = 0 at the rigid lids for the operator
+    dpsi_dz = 0.0;
+  } else if (iz == 1u) {
+    // forward 2nd order
+    dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
+  } else if (iz == nz-2u) {
+    // backward 2nd order
+    dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
+  } else {
+    // interior 4th order
+    dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
+  }
+
 
   // if (iz == 0u || iz == nz - 1u) {
   //   dpsi_dz = 0.0;  // Neumann BC for psi at rigid lid/floor
@@ -490,6 +514,83 @@ if (iz == 0u) {
   gz[id] = dpsi_dz;
 }
 `;
+const GRAD4_BC_WGSL = /* wgsl */`
+${FD4_COMMON}
+
+@group(0) @binding(0) var<storage, read>       psi  : array<f32>;
+@group(0) @binding(1) var<storage, read_write> gx   : array<f32>;
+@group(0) @binding(2) var<storage, read_write> gy   : array<f32>;
+@group(0) @binding(3) var<storage, read_write> gz   : array<f32>;
+@group(0) @binding(5) var<storage, read>       rho0 : array<f32>;
+@group(0) @binding(6) var<storage, read>       wstar: array<f32>;
+
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let id = gid.x;
+  if (id >= FD4.N) { return; }
+
+  let nx = FD4.nx;
+  let ny = FD4.ny;
+  let ix = id % nx;
+  let iy = (id / nx) % ny;
+  let iz = id / (nx * ny);
+
+  let ixp1 = wrap_inc(ix,nx);
+  let ixp2 = wrap_inc(ixp1,nx);
+  let ixm1 = wrap_dec(ix,nx);
+  let ixm2 = wrap_dec(ixm1,nx);
+
+  let iyp1 = wrap_inc(iy,ny);
+  let iyp2 = wrap_inc(iyp1,ny);
+  let iym1 = wrap_dec(iy,ny);
+  let iym2 = wrap_dec(iym1,ny);
+
+  let nz = FD4.nz;
+  let izp1 = min(iz + 1u, nz - 1u); 
+  let izp2 = min(iz + 2u, nz - 1u);
+  let izm1 = max(iz - 1u, 0u);
+  let izm2 = max(iz - 2u, 0u);
+
+  let i_xp1 = idx3(ixp1,iy,iz);
+  let i_xp2 = idx3(ixp2,iy,iz);
+  let i_xm1 = idx3(ixm1,iy,iz);
+  let i_xm2 = idx3(ixm2,iy,iz);
+
+  let i_yp1 = idx3(ix,iyp1,iz);
+  let i_yp2 = idx3(ix,iyp2,iz);
+  let i_ym1 = idx3(ix,iym1,iz);
+  let i_ym2 = idx3(ix,iym2,iz);
+
+  let i_zp1 = idx3(ix,iy,izp1);
+  let i_zp2 = idx3(ix,iy,izp2);
+  let i_zm1 = idx3(ix,iy,izm1);
+  let i_zm2 = idx3(ix,iy,izm2);
+
+  let dpsi_dx = (-psi[i_xp2] + 8.0*psi[i_xp1] - 8.0*psi[i_xm1] + psi[i_xm2]) * FD4.invdx12;
+  let dpsi_dy = (-psi[i_yp2] + 8.0*psi[i_yp1] - 8.0*psi[i_ym1] + psi[i_ym2]) * FD4.invdy12;
+
+  let invdz12 = FD4.invdz12;
+  let invdz2  = 6.0 * invdz12;
+
+  var dpsi_dz: f32;
+
+  // Final correction BC: ∂ψ/∂z = ρ0 w* at lids
+  if (iz == 0u || iz == nz-1u) {
+    dpsi_dz = rho0[id] * wstar[id];
+  } else if (iz == 1u) {
+    dpsi_dz = (-3.0*psi[id] + 4.0*psi[i_zp1] - psi[i_zp2]) * invdz2;
+  } else if (iz == nz-2u) {
+    dpsi_dz = (3.0*psi[id] - 4.0*psi[i_zm1] + psi[i_zm2]) * invdz2;
+  } else {
+    dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
+  }
+
+  gx[id] = dpsi_dx;
+  gy[id] = dpsi_dy;
+  gz[id] = dpsi_dz;
+}
+`;
+
  // ---------- div4 ----------
 //   const DIV4_WGSL = /* wgsl */`
 // ${FD4_COMMON}
@@ -816,6 +917,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let rsold = rsoldBuf[0];
   let pAp   = pApBuf[0];
+
+  // NaN checks that always work:
+  if (pAp != pAp || rsold != rsold) { return; }
+  
+  // tiny denom check:
+  if (abs(pAp) < 1e-20) { return; }
+
   let alpha = rsold / pAp;
 
   psi[i] = psi[i] + alpha * p[i];
@@ -867,7 +975,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const PROJECT_SUB_WGSL = /* wgsl */`
 struct ProjU {
   N: u32,
-  _pad0: u32,
+  _pad0: u32,   
   _pad1: u32,
   _pad2: u32,
 };
@@ -884,9 +992,11 @@ struct ProjU {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= U.N) { return; }
-  u[i] = u[i] - gx[i];
-  v[i] = v[i] - gy[i];
-  w[i] = w[i] - gz[i];
+let s = 0.01; // or 0.001
+u[i] = u[i] - s * gx[i];
+v[i] = v[i] - s * gy[i];
+w[i] = w[i] - s * gz[i];
+
 }
 `;
 
@@ -1002,6 +1112,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       compute: { module: device.createShaderModule({ code: CLAMP_W_WGSL }), entryPoint: "main" },
       label: "fd4_clampW",
     }),
+grad4_bc: device.createComputePipeline({
+  layout: "auto",
+  compute: { module: device.createShaderModule({ code: GRAD4_BC_WGSL }), entryPoint: "main" },
+  label: "fd4_grad4_bc",
+}),
 
   };
 
@@ -1241,6 +1356,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     pass.dispatchWorkgroups(wgCount);
   }
 
+  function passGrad4BC(
+  pass: GPUComputePassEncoder,
+  psi: GPUBuffer,
+  gx: GPUBuffer,
+  gy: GPUBuffer,
+  gz: GPUBuffer,
+  rho0: GPUBuffer,
+  wstar: GPUBuffer
+) {
+  const bg = device.createBindGroup({
+    layout: pipelines.grad4_bc.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: psi } },
+      { binding: 1, resource: { buffer: gx } },
+      { binding: 2, resource: { buffer: gy } },
+      { binding: 3, resource: { buffer: gz } },
+      { binding: 4, resource: { buffer: uniforms.fd4 } }, // FD4 at binding(6) because 0..5 used
+      { binding: 5, resource: { buffer: rho0 } },
+      { binding: 6, resource: { buffer: wstar } },
+    ],
+  });
+  pass.setPipeline(pipelines.grad4_bc);
+  pass.setBindGroup(0, bg);
+  pass.dispatchWorkgroups(wgCount);
+}
+
+
   function applyL4(pass: GPUComputePassEncoder, inv_rho0: GPUBuffer) {
     // gx,gy,gz = grad4(p)
     passGrad4(pass, buffers.p, buffers.gx, buffers.gy, buffers.gz);
@@ -1263,8 +1405,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     rho0: GPUBuffer, inv_rho0: GPUBuffer,
     maxIter = 40
   ) {
-    // TEMP REMOVE
-    // passClampW(pass, w);
+
+    // TEMP: wipe velocities to zero to test projection pipeline
+// passClear(pass, u);
+// passClear(pass, v);
+// passClear(pass, w);
+// passClampW(pass, w);
+
 
     // 1) bDiv = div4(rho0*u*, rho0*v*, rho0*w*)
     // reuse gx/gy/gz as scratch for scaled velocities
@@ -1318,6 +1465,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // 6) compute grad4(psi)
     passGrad4(pass, buffers.psi, buffers.gx, buffers.gy, buffers.gz);
+    // 6) compute grad(psi) with rigid-lid BC using w* and rho0
+    // passGrad4BC(pass, buffers.psi, buffers.gx, buffers.gy, buffers.gz, rho0, w);
+
 
     // scale: g <- inv_rho0 * g
     passMulCoeffInplace(pass, inv_rho0, buffers.gx);
@@ -1329,11 +1479,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     passProjectSubtract(pass, u, v, w);
 
     // clamp w at top and bottom layer to enforce lid
-    passClampW(pass, w);
+    // passClampW(pass, w);
   }
+  
 
   return {
     project,
     resources: { buffers, uniforms, pipelines, wgCount },
+    debugReadbacks: { readbackPAp, readbackRsold, readbackRsnew },
   };
 }
