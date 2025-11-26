@@ -385,21 +385,36 @@ let izm2 = iz - 2u;
   //   dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
   // }
 
-if (iz == 0u) {
-  // forward 2nd order at wall
-  dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
-} else if (iz == 1u) {
-  // still forward 2nd order (uses iz, iz+1, iz+2)
-  dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
-} else if (iz == nz-2u) {
-  // backward 2nd order
-  dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
-} else if (iz == nz-1u) {
-  dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
-} else {
-  // interior 4th order
-  dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
-}
+// if (iz == 0u) {
+//   // forward 2nd order at wall
+//   dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
+// } else if (iz == 1u) {
+//   // still forward 2nd order (uses iz, iz+1, iz+2)
+//   dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
+// } else if (iz == nz-2u) {
+//   // backward 2nd order
+//   dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
+// } else if (iz == nz-1u) {
+//   dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
+// } else {
+//   // interior 4th order
+//   dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
+// }
+
+// z-derivative for CG operator: homogeneous Neumann at lids
+  if (iz == 0u || iz == nz-1u) {
+    // enforce ∂p/∂z = 0 at the rigid lids for the operator
+    dw_dz = 0.0;
+  } else if (iz == 1u) {
+    // forward 2nd order
+    dw_dz = (-3.0*w[id] + 4.0*w[i_zp1] - w[i_zp2]) * invdz2;
+  } else if (iz == nz-2u) {
+    // backward 2nd order
+    dw_dz = (3.0*w[id] - 4.0*w[i_zm1] + w[i_zm2]) * invdz2;
+  } else {
+    // interior 4th order
+    dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
+  }
 
 
   // if (iz == 0u || iz == nz - 1u) {
