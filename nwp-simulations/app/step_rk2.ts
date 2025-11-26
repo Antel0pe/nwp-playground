@@ -489,9 +489,9 @@ export function makeStepRK2(opts: {
             // s★ = s0 + dt * rhs1
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
-            clampW.dispatch(pass, w_star); 
+            // clampW.dispatch(pass, w_star); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
-            clampW.dispatch(pass, w_star); 
+            // clampW.dispatch(pass, w_star); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_star_from_s0_rhs1); pass.dispatchWorkgroups(wg);
 
             // qv★, qc★ = copies of s0
@@ -515,9 +515,15 @@ export function makeStepRK2(opts: {
 
             // projection.project(pass, u_star, v_star, w_star, 100)
             projection4.project(pass, u_star, v_star, w_star, fields.rho0, fields.inv_rho0)
+            clampW.dispatch(pass, w_star);
             
             pass.end(); // <<< close pass before changing alpha
         }
+                encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsInit, 0,
+  projection4.debugReadbacks.readbackRsInit, 0,
+  4
+);
         encoder.copyBufferToBuffer(
   projection4.resources.buffers.pAp, 0,
   projection4.debugReadbacks.readbackPAp, 0,
@@ -565,9 +571,9 @@ encoder.copyBufferToBuffer(
 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_u_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_v_final); pass.dispatchWorkgroups(wg);
-            clampW.dispatch(pass, w_new); 
+            // clampW.dispatch(pass, w_new); 
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_w_final); pass.dispatchWorkgroups(wg);
-            clampW.dispatch(pass, w_new);
+            // clampW.dispatch(pass, w_new);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_th_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qv_final); pass.dispatchWorkgroups(wg);
             pass.setPipeline(pipeAxpy); pass.setBindGroup(0, bgAxpy_qc_final); pass.dispatchWorkgroups(wg);
@@ -587,9 +593,15 @@ encoder.copyBufferToBuffer(
             // Now project final velocities
             // projection.project(pass, u_new, v_new, w_new, 100);
             projection4.project(pass, u_new, v_new, w_new, fields.rho0, fields.inv_rho0);
+            clampW.dispatch(pass, w_new);
             
             pass.end();
         }
+        encoder.copyBufferToBuffer(
+  projection4.resources.buffers.rsInit, 0,
+  projection4.debugReadbacks.readbackRsInit, 0,
+  4
+);
         encoder.copyBufferToBuffer(
   projection4.resources.buffers.pAp, 0,
   projection4.debugReadbacks.readbackPAp, 0,

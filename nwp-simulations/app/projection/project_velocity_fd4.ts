@@ -1,5 +1,6 @@
 // project_velocity_fd4.ts
 import type { SimDims } from "../init_boussinesq";
+import { dt } from "../page";
 
 const WG = 256;
 
@@ -14,7 +15,7 @@ type Fd4Buffers = {
   gz: GPUBuffer;
 
   partials: GPUBuffer; // partial sums for reductions (dot/sum)
-
+  rsInit: GPUBuffer;
   rsold: GPUBuffer;   // 1 float
   rsnew: GPUBuffer;   // 1 float
   pAp: GPUBuffer;     // 1 float
@@ -49,6 +50,7 @@ type Fd4Pipelines = {
   mulCoeffInplace: GPUComputePipeline;
   clampW: GPUComputePipeline;
   grad4_bc: GPUComputePipeline;
+  negateApPipeline: GPUComputePipeline;
 };
 
 export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
@@ -144,10 +146,15 @@ export function makeProjectionFD4(opts: { device: GPUDevice; dims: SimDims }) {
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     }),
+    rsInit: device.createBuffer({
+      size: 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    }),
   };
   const readbackPAp = device.createBuffer({
   size: 4,
   usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  
 });
 const readbackRsold = device.createBuffer({
   size: 4,
@@ -156,6 +163,13 @@ const readbackRsold = device.createBuffer({
 const readbackRsnew = device.createBuffer({
   size: 4,
   usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+});
+
+
+const readbackRsInit = device.createBuffer({
+  size: 4,
+  usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  label: "readbackRsInit",
 });
 
 
@@ -341,14 +355,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // let izp2 = wrap_inc(izp1,nz);
   // let izm1 = wrap_dec(iz,nz);
   // let izm2 = wrap_dec(izm1,nz);
-  // let izp1 = min(iz + 1u, nz - 1u);
-  // let izp2 = min(iz + 2u, nz - 1u);
+  let izp1 = min(iz + 1u, nz - 1u);
+  let izp2 = min(iz + 2u, nz - 1u);
   // let izm1 = max(iz - 1u, 0u);
   // let izm2 = max(iz - 2u, 0u);
-  let izp1 = iz + 1u;
-let izp2 = iz + 2u;
-let izm1 = iz - 1u;
-let izm2 = iz - 2u;
+  let izm1 = select(0u, iz - 1u, iz > 0u);
+let izm2 = select(0u, iz - 2u, iz > 1u);
+//   let izp1 = iz + 1u;
+// let izp2 = iz + 2u;
+// let izm1 = iz - 1u;
+// let izm2 = iz - 2u;
 
 
   let i_xp1 = idx3(ixp1,iy,iz);
@@ -416,6 +432,9 @@ let izm2 = iz - 2u;
     dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * invdz12;
   }
 
+// let dw_dz = (-w[i_zp2] + 8.0*w[i_zp1] - 8.0*w[i_zm1] + w[i_zm2]) * FD4.invdz12;
+
+
 
   // if (iz == 0u || iz == nz - 1u) {
   //   dw_dz = 0.0;  // Neumann BC for psi at rigid lid/floor
@@ -460,14 +479,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // let izp2 = wrap_inc(izp1,nz);
   // let izm1 = wrap_dec(iz,nz);
   // let izm2 = wrap_dec(izm1,nz);
-  // let izp1 = min(iz + 1u, nz - 1u); 
-  // let izp2 = min(iz + 2u, nz - 1u);
+  let izp1 = min(iz + 1u, nz - 1u); 
+  let izp2 = min(iz + 2u, nz - 1u);
   // let izm1 = max(iz - 1u, 0u);
   // let izm2 = max(iz - 2u, 0u);
-  let izp1 = iz + 1u;
-let izp2 = iz + 2u;
-let izm1 = iz - 1u;
-let izm2 = iz - 2u;
+  let izm1 = select(0u, iz - 1u, iz > 0u);
+let izm2 = select(0u, iz - 2u, iz > 1u);
+//   let izp1 = iz + 1u;
+// let izp2 = iz + 2u;
+// let izm1 = iz - 1u;
+// let izm2 = iz - 2u;
 
 
   let i_xp1 = idx3(ixp1,iy,iz);
@@ -518,6 +539,8 @@ let izm2 = iz - 2u;
     // interior 4th order
     dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * invdz12;
   }
+  // let dpsi_dz = (-psi[i_zp2] + 8.0*psi[i_zp1] - 8.0*psi[i_zm1] + psi[i_zm2]) * FD4.invdz12;
+
 
 
   // if (iz == 0u || iz == nz - 1u) {
@@ -1007,10 +1030,10 @@ struct ProjU {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= U.N) { return; }
-let s = 0.01; // or 0.001
-u[i] = u[i] - s * gx[i];
-v[i] = v[i] - s * gy[i];
-w[i] = w[i] - s * gz[i];
+let s = ${dt}; // or 0.001
+u[i] += s * gx[i];
+v[i] += s * gy[i];
+w[i] += s * gz[i];
 
 }
 `;
@@ -1050,6 +1073,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 `;
+
+const NEGATE_AP_WGSL = /* wgsl */`
+// negate_ap.wgsl
+
+struct NegU {
+  N: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+
+@group(0) @binding(0) var<storage, read_write> Ap : array<f32>;
+@group(0) @binding(1) var<uniform>             U  : NegU;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= U.N) { return; }
+
+  Ap[i] = -Ap[i];
+}
+
+`;
+
 
   const pipelines: Fd4Pipelines = {
     div4: device.createComputePipeline({
@@ -1132,7 +1179,11 @@ grad4_bc: device.createComputePipeline({
   compute: { module: device.createShaderModule({ code: GRAD4_BC_WGSL }), entryPoint: "main" },
   label: "fd4_grad4_bc",
 }),
-
+negateApPipeline: device.createComputePipeline({
+  layout: "auto",
+  compute: { module: device.createShaderModule({ code: NEGATE_AP_WGSL }), entryPoint: "main" },
+  label: "fd4_negateAp",
+})
   };
 
   // ---------- small helpers ----------
@@ -1397,6 +1448,21 @@ grad4_bc: device.createComputePipeline({
   pass.dispatchWorkgroups(wgCount);
 }
 
+function passNegateAp(pass: GPUComputePassEncoder, Ap: GPUBuffer) {
+  const bg = device.createBindGroup({
+    layout: pipelines.negateApPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: Ap } },
+      { binding: 1, resource: { buffer: uniforms.copyU } }, // U.N reused
+    ],
+  });
+
+  pass.setPipeline(pipelines.negateApPipeline);
+  pass.setBindGroup(0, bg);
+  pass.dispatchWorkgroups(wgCount);
+}
+
+
 
   function applyL4(pass: GPUComputePassEncoder, inv_rho0: GPUBuffer) {
     // gx,gy,gz = grad4(p)
@@ -1410,6 +1476,7 @@ grad4_bc: device.createComputePipeline({
 
     // Ap = div4(inv_rho0*grad4(p))
     passDiv4(pass, buffers.gx, buffers.gy, buffers.gz, buffers.Ap);
+    passNegateAp(pass, buffers.Ap);
   }
 
 
@@ -1418,7 +1485,7 @@ grad4_bc: device.createComputePipeline({
     pass: GPUComputePassEncoder,
     u: GPUBuffer, v: GPUBuffer, w: GPUBuffer,
     rho0: GPUBuffer, inv_rho0: GPUBuffer,
-    maxIter = 40
+    maxIter = 10
   ) {
 
     // TEMP: wipe velocities to zero to test projection pipeline
@@ -1452,6 +1519,8 @@ grad4_bc: device.createComputePipeline({
     passDot(pass, buffers.r, buffers.r);
 
     passReduce(pass, buffers.rsold);
+
+    passCopyScalar(pass, buffers.rsold, buffers.rsInit);
 
     // 5) CG iterations (fixed maxIter)
     for (let k = 0; k < maxIter; k++) {
@@ -1501,6 +1570,6 @@ grad4_bc: device.createComputePipeline({
   return {
     project,
     resources: { buffers, uniforms, pipelines, wgCount },
-    debugReadbacks: { readbackPAp, readbackRsold, readbackRsnew },
+  debugReadbacks: { readbackPAp, readbackRsold, readbackRsnew, readbackRsInit },
   };
 }

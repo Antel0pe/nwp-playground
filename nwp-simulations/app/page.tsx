@@ -7,6 +7,8 @@ import { makeStepRK2 } from "./step_rk2";
 import { makeComputeRhs } from "./compute_rhs";
 import { makeProjectionFD4 } from "./projection/project_velocity_fd4";
 
+export const dt = 0.5;
+
 // Assume fields.w is your GPUBuffer
 async function debugPrintBufferMax(device: GPUDevice, buffer: GPUBuffer) {
   const readBuffer = device.createBuffer({
@@ -90,7 +92,6 @@ export default function Home() {
         computeRhs,
       });
 
-      const dt = 0.5;
       // const dt = 0.001;
 
       // ------------------------------------------------------------------
@@ -726,10 +727,14 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
         ],
       });
 
-      async function readCGDebug(projection4: ReturnType<typeof makeProjectionFD4>) {
-   const { readbackPAp, readbackRsold, readbackRsnew } = projection4.debugReadbacks;
+async function readCGDebug(projection4: ReturnType<typeof makeProjectionFD4>) {
+  const { readbackPAp, readbackRsold, readbackRsnew, readbackRsInit } = projection4.debugReadbacks;
 
   await device.queue.onSubmittedWorkDone();
+
+  await readbackRsInit.mapAsync(GPUMapMode.READ);
+  const rsInit = new Float32Array(readbackRsInit.getMappedRange())[0];
+  readbackRsInit.unmap();
 
   await readbackPAp.mapAsync(GPUMapMode.READ);
   const pAp = new Float32Array(readbackPAp.getMappedRange())[0];
@@ -743,8 +748,9 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   const rsnew = new Float32Array(readbackRsnew.getMappedRange())[0];
   readbackRsnew.unmap();
 
-  console.log("CG debug:", { pAp, rsold, rsnew });
+  console.log("CG debug:", { rsInit, pAp, rsold, rsnew });
 }
+
 let debugInFlight = false;
 
       // --- animation flags/time ---
