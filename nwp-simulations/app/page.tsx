@@ -36,6 +36,12 @@ export default function Home() {
   const [accumulatedTime, setAccumulatedTime] = useState(0);
 
   useEffect(() => {
+    alert(
+      "⚠️ This demo requires WebGPU.\n\n" +
+      "WebGPU is currently supported only on the latest desktop version of Google Chrome.\n\n" +
+      "If this page does not work, please open it in Chrome on a desktop computer."
+    );
+    
     const canvas = canvasRef.current;
     if (!canvas) return;
 
